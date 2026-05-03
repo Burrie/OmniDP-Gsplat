@@ -47,6 +47,13 @@ namespace Gsplat
                     EditorUtility.SetDirty(settings);
                     AssetDatabase.SaveAssets();
                 }
+
+                if (settings)
+                {
+                    settings.EnsureDefaultReferences();
+                    settings.OnValidate();
+                    EditorUtility.SetDirty(settings);
+                }
 #endif
 
                 s_instance = settings;
@@ -67,7 +74,10 @@ namespace Gsplat
         public GsplatMaterial[] Materials;
         public Mesh Mesh { get; private set; }
 
-        public bool Valid => Materials?.Length != 0 && Mesh && SplatInstanceSize > 0;
+        public bool Valid => ComputeShader && Materials != null && Materials.Length > 0 && Mesh && SplatInstanceSize > 0 &&
+                             Array.TrueForAll(Materials, mat =>
+                                 mat != null && mat.DefaultMaterial != null && mat.CalcDepthShader != null &&
+                                 mat.InitOrderShader != null);
 
         public Version Version
         {
@@ -91,12 +101,45 @@ namespace Gsplat
             {
                 var materials = new GsplatMaterial[Enum.GetValues(typeof(CompressionMode)).Length];
                 materials[(int)CompressionMode.Uncompressed] =
-                    AssetDatabase.LoadAssetAtPath<GsplatMaterial>(GsplatUtils.k_PackagePath +
-                                                                  "Runtime/Materials/GsplatUncompressed.asset");
+                    LoadDefaultMaterial("GsplatUncompressed");
                 materials[(int)CompressionMode.Spark] =
-                    AssetDatabase.LoadAssetAtPath<GsplatMaterial>(GsplatUtils.k_PackagePath +
-                                                                  "Runtime/Materials/GsplatSpark.asset");
+                    LoadDefaultMaterial("GsplatSpark");
                 return materials;
+            }
+        }
+
+        static GsplatMaterial LoadDefaultMaterial(string assetName)
+        {
+            var material = AssetDatabase.LoadAssetAtPath<GsplatMaterial>(
+                $"{GsplatUtils.k_PackagePath}Runtime/Materials/{assetName}.asset");
+            if (material)
+                return material;
+
+            var guids = AssetDatabase.FindAssets($"t:GsplatMaterial {assetName}");
+            foreach (var guid in guids)
+            {
+                material = AssetDatabase.LoadAssetAtPath<GsplatMaterial>(AssetDatabase.GUIDToAssetPath(guid));
+                if (material && material.name == assetName)
+                    return material;
+            }
+
+            return null;
+        }
+
+        void EnsureDefaultReferences()
+        {
+            if (!ComputeShader)
+                ComputeShader = DefaultComputeShader;
+
+            var requiredLength = Enum.GetValues(typeof(CompressionMode)).Length;
+            if (Materials == null || Materials.Length != requiredLength)
+                Materials = DefaultMaterials;
+            else
+            {
+                var defaults = DefaultMaterials;
+                for (int i = 0; i < Materials.Length; ++i)
+                    if (!Materials[i] && i < defaults.Length)
+                        Materials[i] = defaults[i];
             }
         }
 
@@ -140,28 +183,42 @@ namespace Gsplat
 
         void OnValidate()
         {
+#if UNITY_EDITOR
+            EnsureDefaultReferences();
+#endif
             if (ComputeShader != m_prevComputeShader)
             {
                 GsplatSorter.Instance.InitSorter(ComputeShader);
                 m_prevComputeShader = ComputeShader;
             }
 
-            if (SplatInstanceSize != m_prevSplatInstanceSize)
+            if (SplatInstanceSize == 0)
+                SplatInstanceSize = 1;
+
+            if (SplatInstanceSize != m_prevSplatInstanceSize || !Mesh)
             {
-                DestroyImmediate(Mesh);
+                if (Mesh)
+                    DestroyImmediate(Mesh);
                 CreateMeshInstance();
                 m_prevSplatInstanceSize = SplatInstanceSize;
             }
 #if UNITY_EDITOR
+            if (Materials == null)
+                return;
+
             foreach (var mat in Materials)
             {
-                mat.Reset();
+                if (mat)
+                    mat.Reset();
             }
 #endif
         }
 
         void OnEnable()
         {
+#if UNITY_EDITOR
+            EnsureDefaultReferences();
+#endif
             GsplatSorter.Instance.InitSorter(ComputeShader);
             m_prevComputeShader = ComputeShader;
 

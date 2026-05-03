@@ -16,7 +16,9 @@ namespace Gsplat
         public bool isActiveAndEnabled { get; }
         public bool Valid { get; }
         public bool ComputeSortRequired { get; }
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv);
+        public GsplatRenderer.GsplatRenderMode RenderMode { get; }
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
+            GsplatRenderer.GsplatRenderMode renderMode);
     }
 
     public interface ISorterResource
@@ -102,13 +104,15 @@ namespace Gsplat
             Camera.onPreCull -= OnPreCullCamera;
         }
 
-        public bool GatherGsplatsForCamera(Camera cam)
+        public bool GatherGsplatsForCamera(Camera cam,
+            GsplatRenderer.GsplatRenderMode renderMode = GsplatRenderer.GsplatRenderMode.Perspective)
         {
             if (cam.cameraType == CameraType.Preview)
                 return false;
 
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
+            foreach (var gs in m_gsplats.Where(gs =>
+                         gs is { isActiveAndEnabled: true, Valid: true } && gs.RenderMode == renderMode))
                 m_activeGsplats.Add(gs);
             return m_activeGsplats.Count != 0;
         }
@@ -135,33 +139,38 @@ namespace Gsplat
             DispatchSort(m_commandBuffer, camera);
         }
 
-        public void DispatchSort(CommandBuffer cmd, Camera camera)
+        public void DispatchSort(CommandBuffer cmd, Camera camera,
+            GsplatRenderer.GsplatRenderMode renderMode = GsplatRenderer.GsplatRenderMode.Perspective)
         {
             foreach (var gs in m_activeGsplats)
+                DispatchSort(cmd, gs, camera.worldToCameraMatrix * gs.transform.localToWorldMatrix, renderMode);
+        }
+
+        public void DispatchSort(CommandBuffer cmd, IGsplat gs, Matrix4x4 matrixMv,
+            GsplatRenderer.GsplatRenderMode renderMode)
+        {
+            var res = (Resource)gs.SorterResource;
+
+            if (!gs.ComputeSortRequired || gs.RemainingCount <= 0)
+                return;
+
+            if (!res.Initialized)
             {
-                var res = (Resource)gs.SorterResource;
-
-                if (!gs.ComputeSortRequired || gs.RemainingCount <= 0)
-                    continue;
-
-                if (!res.Initialized)
-                {
-                    m_sortPass.InitPayload(cmd, res.OrderBuffer, (uint)res.OrderBuffer.count);
-                    res.Initialized = true;
-                }
-
-                var sorterArgs = new GsplatSortPass.Args
-                {
-                    Count = gs.RemainingCount,
-                    MatrixMv = camera.worldToCameraMatrix * gs.transform.localToWorldMatrix,
-                    InputKeys = res.InputKeys,
-                    InputValues = res.OrderBuffer,
-                    Resources = res.Resources
-                };
-
-                gs.ComputeDepth(cmd, camera.worldToCameraMatrix * gs.transform.localToWorldMatrix);
-                m_sortPass.Dispatch(cmd, sorterArgs);
+                m_sortPass.InitPayload(cmd, res.OrderBuffer, (uint)res.OrderBuffer.count);
+                res.Initialized = true;
             }
+
+            var sorterArgs = new GsplatSortPass.Args
+            {
+                Count = gs.RemainingCount,
+                MatrixMv = matrixMv,
+                InputKeys = res.InputKeys,
+                InputValues = res.OrderBuffer,
+                Resources = res.Resources
+            };
+
+            gs.ComputeDepth(cmd, matrixMv, renderMode);
+            m_sortPass.Dispatch(cmd, sorterArgs);
         }
 
         public ISorterResource CreateSorterResource(uint count, GraphicsBuffer orderBuffer)

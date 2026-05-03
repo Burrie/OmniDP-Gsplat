@@ -6,6 +6,7 @@
 #pragma kernel CalcDepth
 
 uint _SplatCount;
+int _GsplatProjectionMode;
 float4x4 _MatrixMV;
 StructuredBuffer<float3> _PositionBuffer;
 StructuredBuffer<uint> _OrderBuffer;
@@ -20,5 +21,5 @@ void CalcDepth(uint3 id : SV_DispatchThreadID)
 
     float3 pos = _PositionBuffer[_OrderBuffer[idx]];
     pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
-    _DepthBuffer[idx] = pos.z;
+    _DepthBuffer[idx] = _GsplatProjectionMode == 1 ? -length(pos) : pos.z;
 }

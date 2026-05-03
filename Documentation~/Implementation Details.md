@@ -58,3 +58,15 @@ With the splats sorted, they can now be drawn using `Gsplat.shader`.
     4.  An additional falloff, based on the scaling factor, is added to the alpha to keep the gaussian splats smooth. This prevents the harsh edges of cropped splats.
     5.  The final color is the vertex color multiplied by the calculated alpha. An optional `Gamma To Linear` conversion can be applied before output.
 
+### Hybrid Omni-To-Perspective Render Mode
+
+The default path above remains the perspective renderer. `GsplatRenderer.RenderMode` can also be set to `HybridOmniPerspective` for ODGS/OmniGS-style assets trained with an equirectangular rasterizer.
+
+In hybrid mode, `GsplatOmniViewer` on the user camera allocates a 2:1 ERP render texture and renders only the hybrid-mode `GsplatRenderer` instances into that offscreen target. The splat shader switches to spherical projection: the center is mapped from the viewer position to longitude/latitude, then to ERP pixel space. The 2D covariance path uses the ODGS `computeOmniCov2D` Jacobian so splats take the same local footprint shape expected by omnidirectional training. Three horizontal wrap copies are issued to keep splats near the left/right ERP seam continuous.
+
+Sorting also changes only for hybrid mode. `CalcDepth` and `CalcDepthSpark` use radial distance from the ERP viewer position as the key, while perspective renderers continue sorting by view-space `z`.
+
+After the ERP pass, `ERPToPerspective` composites the ERP texture back into the active perspective camera by converting each screen pixel ray into longitude/latitude and sampling the ERP texture. BiRP runs this through `GsplatOmniViewer.OnRenderImage`; URP runs it through an extra `GsplatURPFeature` fullscreen pass before post-processing. Rotation-only camera changes therefore reuse the existing ERP texture and only re-run the fullscreen composite; camera translation invalidates the ERP texture and triggers a new ODGS pass.
+
+The v1 hybrid compositor is an image layer over the camera color buffer. Exact depth interaction with arbitrary Unity scene geometry is intentionally deferred.
+

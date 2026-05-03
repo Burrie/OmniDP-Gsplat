@@ -105,7 +105,10 @@ Shader "Gsplat/Standard"
 
                 ClipCorner(corner, color.w);
 
-                o.vertex = center.proj + float4(corner.offset.x, _ProjectionParams.x * corner.offset.y, 0, 0);
+                float yOffset = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
+                    ? corner.offset.y
+                    : _ProjectionParams.x * corner.offset.y;
+                o.vertex = center.proj + float4(corner.offset.x, yOffset, 0, 0);
                 o.color = color;
                 o.uv = corner.uv;
                 return o;

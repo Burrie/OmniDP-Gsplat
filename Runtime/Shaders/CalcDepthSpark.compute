@@ -6,6 +6,7 @@
 #pragma kernel CalcDepthSpark
 
 uint _SplatCount;
+int _GsplatProjectionMode;
 float4x4 _MatrixMV;
 StructuredBuffer<uint4> _PackedSplatsBuffer;
 StructuredBuffer<uint> _OrderBuffer;
@@ -21,5 +22,5 @@ void CalcDepthSpark(uint3 id : SV_DispatchThreadID)
     uint4 word = _PackedSplatsBuffer[_OrderBuffer[idx]];
     float3 pos = float3(f16tof32(word.y & 0xffffu), f16tof32((word.y >> 16u) & 0xffffu), f16tof32(word.z & 0xffffu));
     pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
-    _DepthBuffer[idx] = pos.z;
+    _DepthBuffer[idx] = _GsplatProjectionMode == 1 ? -length(pos) : pos.z;
 }

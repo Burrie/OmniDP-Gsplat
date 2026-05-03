@@ -29,6 +29,7 @@ namespace Gsplat
         static readonly int k_matrixMv = Shader.PropertyToID("_MatrixMV");
         static readonly int k_depthBuffer = Shader.PropertyToID("_DepthBuffer");
         static readonly int k_orderBuffer = Shader.PropertyToID("_OrderBuffer");
+        static readonly int k_gsplatProjectionMode = Shader.PropertyToID("_GsplatProjectionMode");
 
         public override void Allocate()
         {
@@ -95,13 +96,14 @@ namespace Gsplat
         }
 
         public override void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
-            ISorterResource sorterResource, GsplatResource resource)
+            ISorterResource sorterResource, GsplatResource resource, GsplatRenderer.GsplatRenderMode renderMode)
         {
             var res = (GsplatResourceUncompressed)resource;
             var cs = GsplatMaterial.CalcDepthShader;
             var kernelCalcDepth = 0;
             cmd.SetComputeIntParam(cs, k_splatCount, (int)res.UploadedCount);
             cmd.SetComputeMatrixParam(cs, k_matrixMv, matrixMv);
+            cmd.SetComputeIntParam(cs, k_gsplatProjectionMode, (int)renderMode);
             cmd.SetComputeBufferParam(cs, kernelCalcDepth, k_positionBuffer, res.PositionBuffer);
             cmd.SetComputeBufferParam(cs, kernelCalcDepth, k_depthBuffer, sorterResource.InputKeys);
             cmd.SetComputeBufferParam(cs, kernelCalcDepth, k_orderBuffer, sorterResource.OrderBuffer);

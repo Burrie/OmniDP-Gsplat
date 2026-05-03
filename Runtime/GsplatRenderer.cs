@@ -5,6 +5,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 
 namespace Gsplat
 {
@@ -18,7 +19,15 @@ namespace Gsplat
             CutoutsEveryNSorts,
         }
 
+        public enum GsplatRenderMode
+        {
+            Perspective = 0,
+            HybridOmniPerspective = 1,
+        }
+
         public GsplatAsset GsplatAsset;
+        [FormerlySerializedAs("RenderMode")]
+        [SerializeField] GsplatRenderMode m_renderMode = GsplatRenderMode.Perspective;
         [Range(0, 3)] public int SHDegree = 3;
         [HideInInspector] public uint RenderOrder = 0;
         public float Brightness = 1.0f;
@@ -74,11 +83,24 @@ namespace Gsplat
 
         public bool ComputeSortRequired => m_renderer.ComputeSortRequired;
         public bool ComputeCutoutsRequired => m_renderer.ComputeCutoutsRequired;
+        public GsplatRenderMode RenderMode
+        {
+            get => m_renderMode;
+            set
+            {
+                if (m_renderMode == value)
+                    return;
+                m_renderMode = value;
+                ForceRefresh();
+            }
+        }
+
         public GsplatSortMode SortMode = GsplatSortMode.Always;
         [HideInInspector] public uint SortRefreshRate = 1;
         [HideInInspector] public uint CutoutsRefreshRate = 1;
 
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) => m_renderer.ComputeDepth(cmd, matrixMv);
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv, GsplatRenderMode renderMode) =>
+            m_renderer.ComputeDepth(cmd, matrixMv, renderMode);
 
         void OnEnable()
         {
@@ -117,8 +139,9 @@ namespace Gsplat
         {
             ForceRefresh();
 #if UNITY_EDITOR
+            long localId;
             if (GsplatAsset &&
-                AssetDatabase.TryGetGUIDAndLocalFileIdentifier(GsplatAsset, out var guid, out var localId))
+                AssetDatabase.TryGetGUIDAndLocalFileIdentifier(GsplatAsset, out var guid, out localId))
                 m_assetGuid = guid;
 #endif // #if UNITY_EDITOR
         }
@@ -128,10 +151,13 @@ namespace Gsplat
             m_prevAsset = null;
         }
 
-        public void Update()
+        public bool PrepareRenderer(bool forceRefresh = false)
         {
             if (!GsplatAsset)
                 m_prevAsset = null;
+            if (GsplatAsset && !GsplatSettings.Instance.Valid)
+                return false;
+
             if (m_prevAsset != GsplatAsset)
             {
                 m_renderer?.ReleaseGsplatAsset();
@@ -151,13 +177,36 @@ namespace Gsplat
                 }
             }
 
-            if (Valid && GsplatSettings.Instance.Valid && GsplatSorter.Instance.Valid)
-            {
-                m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
-                m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
-                m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
-                    1.0f - SplatDownscaleFactor, RenderOrder);
-            }
+            if (!Valid || !GsplatSorter.Instance.Valid)
+                return false;
+
+            if (forceRefresh)
+                ForceRefresh();
+
+            m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
+            m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
+            return true;
+        }
+
+        public void RenderPerspective()
+        {
+            m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
+                1.0f - SplatDownscaleFactor, RenderOrder);
+        }
+
+        public void RenderOmni(CommandBuffer cmd, float nearDistance, int targetWidth, int targetHeight)
+        {
+            m_renderer.RenderOmni(cmd, transform, GammaToLinear, SHDegree, Brightness,
+                1.0f - SplatDownscaleFactor, RenderOrder, nearDistance, targetWidth, targetHeight);
+        }
+
+        public void Update()
+        {
+            if (!PrepareRenderer())
+                return;
+
+            if (RenderMode == GsplatRenderMode.Perspective)
+                RenderPerspective();
         }
     }
 }

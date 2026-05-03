@@ -55,6 +55,7 @@ The next steps depend on the Render Pipeline you are using:
 - URP: Add `Gsplat URP Feature` to the URP renderer settings.
   - Find the `Universal Renderer Data` your project is using, click the `Add Renderer Feature` button, and choose `Gsplat URP Feature.`
   - If you are using Unity 6 or later, the Render Graph "Compatibility Mode" in URP settings must be turned off!
+  - If `Gsplat URP Feature` is not listed, clear all compile errors first, then reimport the package or restart Unity. The feature is only compiled when the URP package is installed and the `GSPLAT_ENABLE_URP` package define is active.
 - HDRP: Add `Custom Pass` volume object in your scene and a `Gsplat HDRP Pass` entry to it. The injection Point should be set to `Before Transparent`.
 
 ### Import Assets
@@ -72,6 +73,16 @@ The `Gamma To Linear` option is offered as a workaround to render Gamma Space Gs
 The `Brightness` option allows post-hoc scaling of the Gsplat Asset's brightness. This is functional regardless of color space choices, but will degrade quality if the project and assets are in Gamma Space. This can be most smoothly controlled via the `Log Brightness` slider.
 
 The `Async Upload` option enables streaming data from RAM to VRAM, which can help reduce lags when loading the `GsplatRenderer` or setting its enable property to true. When enabled, the renderer can optionally draw before upload completes (`Render Before Upload Complete`), which will render the asset with whatever data has been uploaded so far.
+
+### Hybrid Omni-To-Perspective Rendering
+
+For `.ply` assets optimized with an omnidirectional rasterizer such as ODGS/OmniGS, set the `Gsplat Renderer` component's `Render Mode` to `Hybrid Omni Perspective`. Then add a `Gsplat Omni Viewer` component to the user camera.
+
+In this mode, the package first renders the ODGS splats into an offscreen 2:1 equirectangular render texture, then composites the correct perspective portion of that texture back onto the camera. Rotating the camera only changes the composite sampling direction; moving the camera re-renders the ERP texture. The ERP render is the expensive part, so start with `1024x512` or `2048x1024` before trying larger render targets.
+
+For URP, keep the `Gsplat URP Feature` installed on the active URP renderer. The same feature now also runs the hybrid fullscreen composite pass. BiRP uses the `Gsplat Omni Viewer` image-effect path.
+
+The v1 hybrid path is an image-layer composite and does not provide exact per-pixel depth interaction with arbitrary Unity scene geometry.
 
 ## Additional Documentation
 

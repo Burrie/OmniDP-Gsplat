@@ -17,9 +17,13 @@ struct SplatSource
 struct SplatCenter
 {
     float3 view;
+    float3 omniView;
     float4 proj;
     float4x4 modelView;
     float projMat00;
+    float lon;
+    float lat;
+    float dist;
 };
 
 struct SplatCovariance
@@ -40,19 +44,50 @@ struct SplatCorner
 
 const float4 discardVec = float4(0.0, 0.0, 2.0, 1.0);
 
+int _GsplatProjectionMode;
+float _GsplatOmniNearDistance;
+float _GsplatOmniWrapOffset;
+float4 _GsplatTargetSize;
+
+#define GSPLAT_PROJECTION_PERSPECTIVE 0
+#define GSPLAT_PROJECTION_HYBRID_OMNI 1
+#define GSPLAT_EPSILON 0.0000001
+
 bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
 {
     float4 centerView = mul(modelView, float4(modelCenter, 1.0));
-    if (centerView.z > 0.0)
+    center.view = centerView.xyz / centerView.w;
+    center.omniView = float3(center.view.x, center.view.y, -center.view.z);
+    center.modelView = modelView;
+    center.projMat00 = UNITY_MATRIX_P[0][0];
+    center.lon = 0.0;
+    center.lat = 0.0;
+    center.dist = 0.0;
+
+    if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
     {
-        return false;
+        center.dist = max(length(center.omniView), GSPLAT_EPSILON);
+        if (center.dist <= max(_GsplatOmniNearDistance, GSPLAT_EPSILON))
+        {
+            return false;
+        }
+
+        float distXZ = max(length(center.omniView.xz), GSPLAT_EPSILON);
+        center.lat = atan2(center.omniView.y, distXZ);
+        center.lon = atan2(center.omniView.x, center.omniView.z);
+
+        float2 uv = float2(center.lon / (2.0 * UNITY_PI) + 0.5 + _GsplatOmniWrapOffset,
+            0.5 - center.lat / UNITY_PI);
+        center.proj = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+        return true;
     }
+
+    if (centerView.z > 0.0)
+        return false;
+
     float4 centerProj = mul(UNITY_MATRIX_P, centerView);
     centerProj.z = clamp(centerProj.z, -abs(centerProj.w), abs(centerProj.w));
-    center.view = centerView.xyz / centerView.w;
     center.proj = centerProj;
-    center.projMat00 = UNITY_MATRIX_P[0][0];
-    center.modelView = modelView;
     return true;
 }
 
@@ -95,33 +130,8 @@ SplatCovariance CalcCovariance(float4 quat, float3 scale)
     return cov;
 }
 
-// calculate the clip-space offset from the center for this gaussian
-bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter center, out SplatCorner corner)
+bool InitCornerFromCov(SplatSource source, float3x3 cov, SplatCenter center, out SplatCorner corner)
 {
-    float3 covA = covariance.covA;
-    float3 covB = covariance.covB;
-    float3x3 Vrk = float3x3(
-        covA.x, covA.y, covA.z,
-        covA.y, covB.x, covB.y,
-        covA.z, covB.y, covB.z
-    );
-
-    float focal = _ScreenParams.x * center.projMat00;
-
-    float3 v = unity_OrthoParams.w == 1.0 ? float3(0.0, 0.0, 1.0) : center.view.xyz;
-
-    float J1 = focal / v.z;
-    float2 J2 = -J1 / v.z * v.xy;
-    float3x3 J = float3x3(
-        J1, 0.0, J2.x,
-        0.0, J1, J2.y,
-        0.0, 0.0, 0.0
-    );
-
-    float3x3 W = center.modelView;
-    float3x3 T = mul(J, W);
-    float3x3 cov = mul(mul(T, Vrk), transpose(T));
-
     #if GSPLAT_AA
     // calculate AA factor
     float detOrig = cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1];
@@ -138,8 +148,12 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
     float lambda1 = mid + radius;
     float lambda2 = max(mid - radius, 0.1);
 
-    // Use the smaller viewport dimension to limit the kernel size relative to the screen resolution.
-    float vmin = min(1024.0, min(_ScreenParams.x, _ScreenParams.y));
+    float2 targetSize = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
+        ? _GsplatTargetSize.xy
+        : _ScreenParams.xy;
+
+    // Use the smaller viewport dimension to limit the kernel size relative to the render resolution.
+    float vmin = min(1024.0, min(targetSize.x, targetSize.y));
 
     float l1 = 2.0 * min(sqrt(2.0 * lambda1), vmin);
     float l2 = 2.0 * min(sqrt(2.0 * lambda2), vmin);
@@ -150,11 +164,16 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
         return false;
     }
 
-    float2 c = center.proj.ww / _ScreenParams.xy;
+    float2 c = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
+        ? 2.0 * _GsplatTargetSize.zw
+        : center.proj.ww / _ScreenParams.xy;
 
     // cull against frustum x/y axes
     float maxL = max(l1, l2);
-    if (any(abs(center.proj.xy) - float2(maxL, maxL) * c > center.proj.ww))
+    float2 clipLimit = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
+        ? float2(1.0, 1.0)
+        : center.proj.ww;
+    if (any(abs(center.proj.xy) - float2(maxL, maxL) * c > clipLimit))
     {
         return false;
     }
@@ -167,6 +186,66 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
     corner.uv = source.cornerUV;
 
     return true;
+}
+
+// calculate the clip-space offset from the center for this gaussian
+bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter center, out SplatCorner corner)
+{
+    float3 covA = covariance.covA;
+    float3 covB = covariance.covB;
+    float3x3 Vrk = float3x3(
+        covA.x, covA.y, covA.z,
+        covA.y, covB.x, covB.y,
+        covA.z, covB.y, covB.z
+    );
+
+    if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
+    {
+        float xScale = _GsplatTargetSize.x / (2.0 * UNITY_PI);
+        float yScale = _GsplatTargetSize.y / UNITY_PI;
+        float sinLat, cosLat, sinLon, cosLon;
+        sincos(center.lat, sinLat, cosLat);
+        sincos(center.lon, sinLon, cosLon);
+
+        float3x3 sqj = float3x3(
+            xScale / ((cosLat + GSPLAT_EPSILON) * center.dist), 0.0, 0.0,
+            0.0, yScale / center.dist, 0.0,
+            0.0, 0.0, 0.0
+        );
+
+        float3x3 sphericalFrame = float3x3(
+            cosLon, 0.0, -sinLon,
+            sinLat * sinLon, cosLat, sinLat * cosLon,
+            cosLat * sinLon, -sinLat, cosLat * cosLon
+        );
+
+        float3x3 WUnity = (float3x3)center.modelView;
+        float3x3 W = float3x3(
+            WUnity[0][0], WUnity[0][1], WUnity[0][2],
+            WUnity[1][0], WUnity[1][1], WUnity[1][2],
+            -WUnity[2][0], -WUnity[2][1], -WUnity[2][2]
+        );
+        float3x3 jo = mul(mul(W, sphericalFrame), sqj);
+        float3x3 cov = mul(mul(transpose(jo), Vrk), jo);
+        return InitCornerFromCov(source, cov, center, corner);
+    }
+
+    float focal = _ScreenParams.x * center.projMat00;
+
+    float3 v = unity_OrthoParams.w == 1.0 ? float3(0.0, 0.0, 1.0) : center.view.xyz;
+
+    float J1 = focal / v.z;
+    float2 J2 = -J1 / v.z * v.xy;
+    float3x3 J = float3x3(
+        J1, 0.0, J2.x,
+        0.0, J1, J2.y,
+        0.0, 0.0, 0.0
+    );
+
+    float3x3 W = (float3x3)center.modelView;
+    float3x3 T = mul(J, W);
+    float3x3 cov = mul(mul(T, Vrk), transpose(T));
+    return InitCornerFromCov(source, cov, center, corner);
 }
 
 void ClipCorner(inout SplatCorner corner, float alpha)

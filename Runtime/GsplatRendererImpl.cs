@@ -34,6 +34,10 @@ namespace Gsplat
         static readonly int k_shDegree = Shader.PropertyToID("_SHDegree");
         static readonly int k_brightness = Shader.PropertyToID("_Brightness");
         static readonly int k_scaleFactor = Shader.PropertyToID("_ScaleFactor");
+        static readonly int k_gsplatProjectionMode = Shader.PropertyToID("_GsplatProjectionMode");
+        static readonly int k_gsplatOmniNearDistance = Shader.PropertyToID("_GsplatOmniNearDistance");
+        static readonly int k_gsplatOmniWrapOffset = Shader.PropertyToID("_GsplatOmniWrapOffset");
+        static readonly int k_gsplatTargetSize = Shader.PropertyToID("_GsplatTargetSize");
 
         uint m_framesBeforeRecomputeSort = 0;
         uint m_sortsBeforeRecomputeCutouts = 0;
@@ -62,8 +66,8 @@ namespace Gsplat
             CreatePropertyBlock();
         }
 
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv) =>
-            m_gsplatAsset.ComputeDepth(cmd, matrixMv, SorterResource, GsplatResource);
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv, GsplatRenderer.GsplatRenderMode renderMode) =>
+            m_gsplatAsset.ComputeDepth(cmd, matrixMv, SorterResource, GsplatResource, renderMode);
 
         Bounds ExtractBounds()
         {
@@ -265,13 +269,8 @@ namespace Gsplat
             if (m_remainingCount <= 0)
                 return;
 
-            m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
-            m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
-            m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
-            m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
-            m_propertyBlock.SetFloat(k_brightness, brightness);
-            m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
-            m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
+            SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
+                GsplatRenderer.GsplatRenderMode.Perspective, 0.2f, Screen.width, Screen.height, 0.0f);
 
             uint order = Math.Clamp(renderOrder, 0, GsplatSettings.Instance.MaxRenderOrder - 1);
             var rp = new RenderParams(m_gsplatAsset.Materials[order])
@@ -283,6 +282,46 @@ namespace Gsplat
 
             Graphics.RenderMeshPrimitives(rp, GsplatSettings.Instance.Mesh, 0,
                 Mathf.CeilToInt(m_remainingCount / (float)GsplatSettings.Instance.SplatInstanceSize));
+        }
+
+        public void RenderOmni(CommandBuffer cmd, Transform transform, bool gammaToLinear = false, int shDegree = 3,
+            float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float nearDistance = 0.2f,
+            int targetWidth = 2048, int targetHeight = 1024)
+        {
+            if (m_remainingCount <= 0)
+                return;
+
+            uint order = Math.Clamp(renderOrder, 0, GsplatSettings.Instance.MaxRenderOrder - 1);
+            var material = m_gsplatAsset.Materials[order];
+            var instanceCount = Mathf.CeilToInt(m_remainingCount / (float)GsplatSettings.Instance.SplatInstanceSize);
+
+            // Draw three horizontally wrapped copies so splats crossing the ERP seam remain continuous.
+            for (int wrapOffset = -1; wrapOffset <= 1; ++wrapOffset)
+            {
+                SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
+                    GsplatRenderer.GsplatRenderMode.HybridOmniPerspective, nearDistance, targetWidth, targetHeight,
+                    wrapOffset);
+                cmd.DrawMeshInstancedProcedural(GsplatSettings.Instance.Mesh, 0, material, 0, instanceCount,
+                    m_propertyBlock);
+            }
+        }
+
+        void SetupDrawProperties(Transform transform, bool gammaToLinear, int shDegree, float brightness,
+            float scaleFactor, GsplatRenderer.GsplatRenderMode renderMode, float nearDistance, int targetWidth,
+            int targetHeight, float wrapOffset)
+        {
+            m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
+            m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
+            m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
+            m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
+            m_propertyBlock.SetInteger(k_gsplatProjectionMode, (int)renderMode);
+            m_propertyBlock.SetFloat(k_brightness, brightness);
+            m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
+            m_propertyBlock.SetFloat(k_gsplatOmniNearDistance, nearDistance);
+            m_propertyBlock.SetFloat(k_gsplatOmniWrapOffset, wrapOffset);
+            m_propertyBlock.SetVector(k_gsplatTargetSize,
+                new Vector4(targetWidth, targetHeight, 1.0f / targetWidth, 1.0f / targetHeight));
+            m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
         }
     }
 }
