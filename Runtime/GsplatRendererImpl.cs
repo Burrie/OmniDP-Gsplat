@@ -38,6 +38,10 @@ namespace Gsplat
         static readonly int k_gsplatOmniNearDistance = Shader.PropertyToID("_GsplatOmniNearDistance");
         static readonly int k_gsplatOmniWrapOffset = Shader.PropertyToID("_GsplatOmniWrapOffset");
         static readonly int k_gsplatTargetSize = Shader.PropertyToID("_GsplatTargetSize");
+        static readonly int k_pvgDynamic = Shader.PropertyToID("_PvgDynamic");
+        static readonly int k_pvgTime = Shader.PropertyToID("_PvgTime");
+        static readonly int k_pvgPeriod = Shader.PropertyToID("_PvgPeriod");
+        const int k_omniErpPass = 1;
 
         uint m_framesBeforeRecomputeSort = 0;
         uint m_sortsBeforeRecomputeCutouts = 0;
@@ -66,8 +70,10 @@ namespace Gsplat
             CreatePropertyBlock();
         }
 
-        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv, GsplatRenderer.GsplatRenderMode renderMode) =>
-            m_gsplatAsset.ComputeDepth(cmd, matrixMv, SorterResource, GsplatResource, renderMode);
+        public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv, GsplatRenderer.GsplatRenderMode renderMode,
+            float pvgTime, float pvgPeriod) =>
+            m_gsplatAsset.ComputeDepth(cmd, matrixMv, SorterResource, GsplatResource, renderMode,
+                pvgTime, pvgPeriod);
 
         Bounds ExtractBounds()
         {
@@ -264,18 +270,20 @@ namespace Gsplat
         /// <param name="scaleFactor">Splats uv scaling factor, reduce splat size while trying to keep visual fidelity.</param>
         /// <param name="renderOrder">Manual render order placement of the gsplat. The final value is capped by the maximum render order setting.</param>
         public void Render(Transform transform, int layer, bool gammaToLinear = false, int shDegree = 3,
-            float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0)
+            float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float pvgTime = 0.0f,
+            float pvgPeriod = 1.0f)
         {
             if (m_remainingCount <= 0)
                 return;
 
             SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
-                GsplatRenderer.GsplatRenderMode.Perspective, 0.2f, Screen.width, Screen.height, 0.0f);
+                GsplatRenderer.GsplatRenderMode.Perspective, 0.2f, Screen.width, Screen.height, 0.0f,
+                pvgTime, pvgPeriod);
 
             uint order = Math.Clamp(renderOrder, 0, GsplatSettings.Instance.MaxRenderOrder - 1);
             var rp = new RenderParams(m_gsplatAsset.Materials[order])
             {
-                worldBounds = GsplatUtils.CalcWorldBounds(m_bounds, transform),
+                worldBounds = GsplatUtils.CalcWorldBounds(GetDrawBounds(pvgPeriod), transform),
                 matProps = m_propertyBlock,
                 layer = layer
             };
@@ -286,13 +294,13 @@ namespace Gsplat
 
         public void RenderOmni(CommandBuffer cmd, Transform transform, bool gammaToLinear = false, int shDegree = 3,
             float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float nearDistance = 0.2f,
-            int targetWidth = 2048, int targetHeight = 1024)
+            int targetWidth = 2048, int targetHeight = 1024, float pvgTime = 0.0f, float pvgPeriod = 1.0f)
         {
             if (m_remainingCount <= 0)
                 return;
 
             uint order = Math.Clamp(renderOrder, 0, GsplatSettings.Instance.MaxRenderOrder - 1);
-            var material = m_gsplatAsset.Materials[order];
+            var material = m_gsplatAsset.OmniMaterials[order];
             var instanceCount = Mathf.CeilToInt(m_remainingCount / (float)GsplatSettings.Instance.SplatInstanceSize);
 
             // Draw three horizontally wrapped copies so splats crossing the ERP seam remain continuous.
@@ -300,15 +308,15 @@ namespace Gsplat
             {
                 SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
                     GsplatRenderer.GsplatRenderMode.HybridOmniPerspective, nearDistance, targetWidth, targetHeight,
-                    wrapOffset);
-                cmd.DrawMeshInstancedProcedural(GsplatSettings.Instance.Mesh, 0, material, 0, instanceCount,
+                    wrapOffset, pvgTime, pvgPeriod);
+                cmd.DrawMeshInstancedProcedural(GsplatSettings.Instance.Mesh, 0, material, k_omniErpPass, instanceCount,
                     m_propertyBlock);
             }
         }
 
         void SetupDrawProperties(Transform transform, bool gammaToLinear, int shDegree, float brightness,
             float scaleFactor, GsplatRenderer.GsplatRenderMode renderMode, float nearDistance, int targetWidth,
-            int targetHeight, float wrapOffset)
+            int targetHeight, float wrapOffset, float pvgTime, float pvgPeriod)
         {
             m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
             m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
@@ -319,9 +327,25 @@ namespace Gsplat
             m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
             m_propertyBlock.SetFloat(k_gsplatOmniNearDistance, nearDistance);
             m_propertyBlock.SetFloat(k_gsplatOmniWrapOffset, wrapOffset);
+            m_propertyBlock.SetInteger(k_pvgDynamic, m_gsplatAsset.IsPvgDynamic ? 1 : 0);
+            m_propertyBlock.SetFloat(k_pvgTime, pvgTime);
+            m_propertyBlock.SetFloat(k_pvgPeriod, Mathf.Max(GsplatRenderer.k_MinPvgPeriod, pvgPeriod));
             m_propertyBlock.SetVector(k_gsplatTargetSize,
                 new Vector4(targetWidth, targetHeight, 1.0f / targetWidth, 1.0f / targetHeight));
             m_propertyBlock.SetMatrix(k_matrixM, transform.localToWorldMatrix);
+        }
+
+        Bounds GetDrawBounds(float pvgPeriod)
+        {
+            var bounds = m_bounds;
+            if (m_gsplatAsset == null || !m_gsplatAsset.IsPvgDynamic)
+                return bounds;
+
+            float maxDisplacement = m_gsplatAsset.PvgMaxVelocityMagnitude *
+                                    Mathf.Max(GsplatRenderer.k_MinPvgPeriod, pvgPeriod) /
+                                    (2.0f * Mathf.PI);
+            bounds.Expand(maxDisplacement * 2.0f);
+            return bounds;
         }
     }
 }

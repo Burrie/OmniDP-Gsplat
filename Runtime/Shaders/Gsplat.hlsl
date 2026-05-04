@@ -48,10 +48,42 @@ int _GsplatProjectionMode;
 float _GsplatOmniNearDistance;
 float _GsplatOmniWrapOffset;
 float4 _GsplatTargetSize;
+int _PvgDynamic;
+float _PvgTime;
+float _PvgPeriod;
+StructuredBuffer<float2> _PvgTimeBuffer;
+StructuredBuffer<float3> _PvgVelocityBuffer;
 
 #define GSPLAT_PROJECTION_PERSPECTIVE 0
 #define GSPLAT_PROJECTION_HYBRID_OMNI 1
 #define GSPLAT_EPSILON 0.0000001
+
+float PvgAngularFrequency()
+{
+    return 2.0 * UNITY_PI / max(abs(_PvgPeriod), GSPLAT_EPSILON);
+}
+
+float3 ApplyPvgPosition(uint splatId, float3 modelCenter)
+{
+    if (_PvgDynamic == 0)
+        return modelCenter;
+
+    float2 pvgTimeData = _PvgTimeBuffer[splatId];
+    float3 velocity = _PvgVelocityBuffer[splatId];
+    float a = PvgAngularFrequency();
+    return modelCenter + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
+}
+
+float ApplyPvgOpacity(uint splatId, float opacity)
+{
+    if (_PvgDynamic == 0)
+        return opacity;
+
+    float2 pvgTimeData = _PvgTimeBuffer[splatId];
+    float beta = max(exp(pvgTimeData.y), GSPLAT_EPSILON);
+    float dt = pvgTimeData.x - _PvgTime;
+    return opacity * exp(-0.5 * dt * dt / (beta * beta));
+}
 
 bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
 {

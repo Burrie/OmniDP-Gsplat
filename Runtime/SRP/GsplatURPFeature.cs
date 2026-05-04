@@ -48,6 +48,53 @@ namespace Gsplat
 #endif
         }
 
+        class GsplatOmniErpPass : ScriptableRenderPass
+        {
+            const string k_PassName = "Gsplat Hybrid Omni ERP";
+
+#if UNITY_6000_0_OR_NEWER
+            class PassData
+            {
+                public UniversalCameraData CameraData;
+            }
+
+            public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+            {
+                using var builder = renderGraph.AddUnsafePass(k_PassName, out PassData passData);
+                passData.CameraData = frameData.Get<UniversalCameraData>();
+                builder.AllowPassCulling(false);
+                builder.SetRenderFunc(static (PassData data, UnsafeGraphContext context) =>
+                {
+                    if (!TryGetActiveViewer(data.CameraData.camera, out var viewer) || !viewer.ShouldRenderErp())
+                        return;
+
+                    var commandBuffer = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
+                    viewer.RecordErpRender(commandBuffer, true);
+                });
+            }
+#else
+            RTHandle m_cameraColorTarget;
+
+            public void Setup(RTHandle cameraColorTarget)
+            {
+                m_cameraColorTarget = cameraColorTarget;
+            }
+
+            public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+            {
+                if (!TryGetActiveViewer(renderingData.cameraData.camera, out var viewer) || !viewer.ShouldRenderErp())
+                    return;
+
+                var cmd = CommandBufferPool.Get(k_PassName);
+                viewer.RecordErpRender(cmd, true);
+                if (m_cameraColorTarget != null)
+                    CoreUtils.SetRenderTarget(cmd, m_cameraColorTarget);
+                context.ExecuteCommandBuffer(cmd);
+                CommandBufferPool.Release(cmd);
+            }
+#endif
+        }
+
         class GsplatOmniCompositePass : ScriptableRenderPass
         {
             const string k_PassName = "Gsplat Hybrid Omni Composite";
@@ -117,12 +164,14 @@ namespace Gsplat
         }
 
         GsplatRenderPass m_pass;
+        GsplatOmniErpPass m_erpPass;
         GsplatOmniCompositePass m_compositePass;
         bool m_hasGsplats;
 
         public override void Create()
         {
             m_pass = new GsplatRenderPass { renderPassEvent = RenderPassEvent.BeforeRenderingTransparents };
+            m_erpPass = new GsplatOmniErpPass { renderPassEvent = RenderPassEvent.BeforeRenderingTransparents };
             m_compositePass = new GsplatOmniCompositePass
             {
                 renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing
@@ -144,6 +193,7 @@ namespace Gsplat
                 renderer.EnqueuePass(m_pass);
             if (TryGetActiveViewer(renderingData.cameraData.camera, out _))
             {
+                renderer.EnqueuePass(m_erpPass);
                 m_compositePass.ConfigureInput(ScriptableRenderPassInput.Color);
                 renderer.EnqueuePass(m_compositePass);
             }
@@ -153,7 +203,10 @@ namespace Gsplat
         public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData renderingData)
         {
             if (TryGetActiveViewer(renderingData.cameraData.camera, out _))
+            {
+                m_erpPass.Setup(renderer.cameraColorTargetHandle);
                 m_compositePass.Setup(renderer.cameraColorTargetHandle);
+            }
         }
 #endif
 
@@ -165,6 +218,7 @@ namespace Gsplat
             m_compositePass?.Dispose();
 #endif
             m_pass = null;
+            m_erpPass = null;
             m_compositePass = null;
         }
 

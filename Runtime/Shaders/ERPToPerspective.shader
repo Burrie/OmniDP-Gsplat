@@ -31,8 +31,10 @@ Shader "Gsplat/ERPToPerspective"
 
             sampler2D _BlitTexture;
             sampler2D _GsplatOmniTex;
-            float4x4 _GsplatCompositeInvProjection;
-            float4x4 _GsplatCompositeCameraToWorld;
+            float4 _GsplatCompositeCameraForward;
+            float4 _GsplatCompositeCameraRight;
+            float4 _GsplatCompositeCameraUp;
+            float4 _GsplatCompositeProjectionData;
             float4x4 _GsplatOmniWorldToCamera;
 
             struct v2f
@@ -60,10 +62,12 @@ Shader "Gsplat/ERPToPerspective"
                 float4 scene = tex2D(_BlitTexture, i.uv);
 
                 float2 ndc = i.uv * 2.0 - 1.0;
-                float4 view = mul(_GsplatCompositeInvProjection, float4(ndc, 1.0, 1.0));
-                float safeW = abs(view.w) < 0.0000001 ? (view.w < 0.0 ? -0.0000001 : 0.0000001) : view.w;
-                float3 viewDir = normalize(view.xyz / safeW);
-                float3 worldDir = normalize(mul((float3x3)_GsplatCompositeCameraToWorld, viewDir));
+                float tanHalfVerticalFov = _GsplatCompositeProjectionData.x;
+                float aspect = _GsplatCompositeProjectionData.y;
+                float3 worldDir = normalize(
+                    _GsplatCompositeCameraForward.xyz +
+                    _GsplatCompositeCameraRight.xyz * ndc.x * tanHalfVerticalFov * aspect +
+                    _GsplatCompositeCameraUp.xyz * ndc.y * tanHalfVerticalFov);
                 float3 erpView = mul((float3x3)_GsplatOmniWorldToCamera, worldDir);
                 float3 omniDir = normalize(float3(erpView.x, erpView.y, -erpView.z));
 
@@ -98,8 +102,10 @@ Shader "Gsplat/ERPToPerspective"
 
             sampler2D _BlitTexture;
             sampler2D _GsplatOmniTex;
-            float4x4 _GsplatCompositeInvProjection;
-            float4x4 _GsplatCompositeCameraToWorld;
+            float4 _GsplatCompositeCameraForward;
+            float4 _GsplatCompositeCameraRight;
+            float4 _GsplatCompositeCameraUp;
+            float4 _GsplatCompositeProjectionData;
             float4x4 _GsplatOmniWorldToCamera;
 
             float4 frag(v2f_img i) : SV_Target
@@ -107,10 +113,12 @@ Shader "Gsplat/ERPToPerspective"
                 float4 scene = tex2D(_BlitTexture, i.uv);
 
                 float2 ndc = i.uv * 2.0 - 1.0;
-                float4 view = mul(_GsplatCompositeInvProjection, float4(ndc, 1.0, 1.0));
-                float safeW = abs(view.w) < 0.0000001 ? (view.w < 0.0 ? -0.0000001 : 0.0000001) : view.w;
-                float3 viewDir = normalize(view.xyz / safeW);
-                float3 worldDir = normalize(mul((float3x3)_GsplatCompositeCameraToWorld, viewDir));
+                float tanHalfVerticalFov = _GsplatCompositeProjectionData.x;
+                float aspect = _GsplatCompositeProjectionData.y;
+                float3 worldDir = normalize(
+                    _GsplatCompositeCameraForward.xyz +
+                    _GsplatCompositeCameraRight.xyz * ndc.x * tanHalfVerticalFov * aspect +
+                    _GsplatCompositeCameraUp.xyz * ndc.y * tanHalfVerticalFov);
                 float3 erpView = mul((float3x3)_GsplatOmniWorldToCamera, worldDir);
                 float3 omniDir = normalize(float3(erpView.x, erpView.y, -erpView.z));
 

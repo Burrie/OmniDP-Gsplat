@@ -29,6 +29,19 @@ namespace Gsplat
         public int OpacityOffset = -1;
         public int ScaleOffset = -1;
         public int RotationOffset = -1;
+        public int PvgTOffset = -1;
+        public int PvgScaleTOffset = -1;
+        public int PvgVelocity0Offset = -1;
+        public int PvgVelocity1Offset = -1;
+        public int PvgVelocity2Offset = -1;
+
+        public bool HasPvgProperties =>
+            PvgTOffset != -1 || PvgScaleTOffset != -1 ||
+            PvgVelocity0Offset != -1 || PvgVelocity1Offset != -1 || PvgVelocity2Offset != -1;
+
+        public bool IsPvgDynamic =>
+            PvgTOffset != -1 && PvgScaleTOffset != -1 &&
+            PvgVelocity0Offset != -1 && PvgVelocity1Offset != -1 && PvgVelocity2Offset != -1;
 
         /// <summary>
         /// Read each line, used for header reading.
@@ -82,12 +95,42 @@ namespace Gsplat
                     case "rot_0":
                         RotationOffset = PropertyCount;
                         break;
+                    case "t":
+                        PvgTOffset = PropertyCount;
+                        break;
+                    case "scale_t":
+                        PvgScaleTOffset = PropertyCount;
+                        break;
+                    case "v_0":
+                        PvgVelocity0Offset = PropertyCount;
+                        break;
+                    case "v_1":
+                        PvgVelocity1Offset = PropertyCount;
+                        break;
+                    case "v_2":
+                        PvgVelocity2Offset = PropertyCount;
+                        break;
                 }
 
                 if (tokens[2].StartsWith("f_rest_"))
                     SHPropertyCount++;
                 PropertyCount++;
             }
+        }
+
+        public void ValidatePvgProperties()
+        {
+            if (!HasPvgProperties || IsPvgDynamic)
+                return;
+
+            var missing = new List<string>();
+            if (PvgTOffset == -1) missing.Add("t");
+            if (PvgScaleTOffset == -1) missing.Add("scale_t");
+            if (PvgVelocity0Offset == -1) missing.Add("v_0");
+            if (PvgVelocity1Offset == -1) missing.Add("v_1");
+            if (PvgVelocity2Offset == -1) missing.Add("v_2");
+            throw new NotSupportedException(
+                $"partial PVG dynamic PLY header: missing required properties {string.Join(", ", missing)}");
         }
     }
 
@@ -98,15 +141,75 @@ namespace Gsplat
         public uint SplatCount;
         public byte SHBands; // 0, 1, 2, or 3
         public Bounds Bounds;
+        [HideInInspector] public bool IsPvgDynamic;
+        [HideInInspector] public float PvgMaxVelocityMagnitude;
+        [HideInInspector] public Vector2[] PvgTimeData; // x = tau, y = raw/log beta
+        [HideInInspector] public Vector3[] PvgVelocities;
         public abstract CompressionMode Compression { get; }
 
         protected int m_kernelInitOrder;
         static readonly protected int k_boundsBuffer = Shader.PropertyToID("_BoundsBuffer");
         static readonly protected int k_cutoutsBuffer = Shader.PropertyToID("_CutoutsBuffer");
         static readonly protected int k_cutoutsCount = Shader.PropertyToID("_CutoutsCount");
+        static readonly protected int k_pvgDynamic = Shader.PropertyToID("_PvgDynamic");
+        static readonly protected int k_pvgTime = Shader.PropertyToID("_PvgTime");
+        static readonly protected int k_pvgPeriod = Shader.PropertyToID("_PvgPeriod");
+        static readonly protected int k_pvgTimeBuffer = Shader.PropertyToID("_PvgTimeBuffer");
+        static readonly protected int k_pvgVelocityBuffer = Shader.PropertyToID("_PvgVelocityBuffer");
 
         public GsplatMaterial GsplatMaterial => GsplatSettings.Instance.Materials[(int)Compression];
         public Material[] Materials => GsplatMaterial.Materials[SHBands];
+        public Material[] OmniMaterials => GsplatMaterial.OmniMaterials[SHBands];
+
+        protected void AllocatePvgData()
+        {
+            PvgMaxVelocityMagnitude = 0.0f;
+            if (IsPvgDynamic)
+            {
+                PvgTimeData = new Vector2[SplatCount];
+                PvgVelocities = new Vector3[SplatCount];
+            }
+            else
+            {
+                PvgTimeData = null;
+                PvgVelocities = null;
+            }
+        }
+
+        protected void SetPvgData(uint index, Vector2 timeData, Vector3 velocity)
+        {
+            if (!IsPvgDynamic)
+                return;
+
+            PvgTimeData[(int)index] = timeData;
+            PvgVelocities[(int)index] = velocity;
+            PvgMaxVelocityMagnitude = Mathf.Max(PvgMaxVelocityMagnitude, velocity.magnitude);
+        }
+
+        protected void UploadPvgData(GsplatResource resource)
+        {
+            if (!IsPvgDynamic)
+                return;
+
+            resource.PvgTimeBuffer.SetData(PvgTimeData);
+            resource.PvgVelocityBuffer.SetData(PvgVelocities);
+        }
+
+        protected void SetupPvgMaterialPropertyBlock(MaterialPropertyBlock propertyBlock, GsplatResource resource)
+        {
+            propertyBlock.SetBuffer(k_pvgTimeBuffer, resource.PvgTimeBuffer);
+            propertyBlock.SetBuffer(k_pvgVelocityBuffer, resource.PvgVelocityBuffer);
+        }
+
+        protected void SetPvgComputeParams(CommandBuffer cmd, ComputeShader cs, int kernel,
+            GsplatResource resource, float pvgTime, float pvgPeriod)
+        {
+            cmd.SetComputeIntParam(cs, k_pvgDynamic, IsPvgDynamic ? 1 : 0);
+            cmd.SetComputeFloatParam(cs, k_pvgTime, pvgTime);
+            cmd.SetComputeFloatParam(cs, k_pvgPeriod, Mathf.Max(GsplatRenderer.k_MinPvgPeriod, pvgPeriod));
+            cmd.SetComputeBufferParam(cs, kernel, k_pvgTimeBuffer, resource.PvgTimeBuffer);
+            cmd.SetComputeBufferParam(cs, kernel, k_pvgVelocityBuffer, resource.PvgVelocityBuffer);
+        }
 
         public abstract void Allocate();
         public abstract void LoadFromPly(string plyPath, ProgressCallback progressCallback = null);
@@ -166,7 +269,7 @@ namespace Gsplat
 
         public abstract void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
             ISorterResource sorterResource, GsplatResource resource,
-            GsplatRenderer.GsplatRenderMode renderMode);
+            GsplatRenderer.GsplatRenderMode renderMode, float pvgTime, float pvgPeriod);
 
         public abstract void InitOrder(ISorterResource sorterResource, GsplatResource resource,
             bool updateBounds);

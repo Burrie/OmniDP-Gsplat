@@ -7,6 +7,35 @@ namespace Gsplat
     {
         public bool Uploaded;
         public uint UploadedCount;
+        public GraphicsBuffer PvgTimeBuffer { get; private set; }
+        public GraphicsBuffer PvgVelocityBuffer { get; private set; }
+
+        protected void CreatePvgBuffers(uint splatCount, bool isPvgDynamic)
+        {
+            if (splatCount == 0)
+                return;
+
+            int bufferCount = isPvgDynamic ? (int)splatCount : 1;
+            PvgTimeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, bufferCount,
+                Marshal.SizeOf(typeof(Vector2)));
+            PvgVelocityBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, bufferCount,
+                Marshal.SizeOf(typeof(Vector3)));
+
+            if (isPvgDynamic)
+                return;
+
+            PvgTimeBuffer.SetData(new[] { Vector2.zero });
+            PvgVelocityBuffer.SetData(new[] { Vector3.zero });
+        }
+
+        protected void DisposePvgBuffers()
+        {
+            PvgTimeBuffer?.Dispose();
+            PvgTimeBuffer = null;
+            PvgVelocityBuffer?.Dispose();
+            PvgVelocityBuffer = null;
+        }
+
         public abstract void Dispose();
     }
 
@@ -18,10 +47,11 @@ namespace Gsplat
         public GraphicsBuffer ColorBuffer { get; private set; }
         public GraphicsBuffer SHBuffer { get; private set; }
 
-        public GsplatResourceUncompressed(uint splatCount, byte shBands)
+        public GsplatResourceUncompressed(uint splatCount, byte shBands, bool isPvgDynamic)
         {
             if (splatCount == 0)
                 return;
+            CreatePvgBuffers(splatCount, isPvgDynamic);
             PositionBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
                 Marshal.SizeOf(typeof(Vector3)));
             ScaleBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
@@ -47,6 +77,7 @@ namespace Gsplat
             ColorBuffer = null;
             SHBuffer?.Dispose();
             SHBuffer = null;
+            DisposePvgBuffers();
         }
     }
 
@@ -57,10 +88,11 @@ namespace Gsplat
         public GraphicsBuffer PackedSH2Buffer { get; private set; }
         public GraphicsBuffer PackedSH3Buffer { get; private set; }
 
-        public GsplatResourceSpark(uint splatCount, byte shBands) : base()
+        public GsplatResourceSpark(uint splatCount, byte shBands, bool isPvgDynamic) : base()
         {
             if (splatCount == 0)
                 return;
+            CreatePvgBuffers(splatCount, isPvgDynamic);
             PackedSplatsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, (int)splatCount,
                 sizeof(uint) * 4);
             if (shBands >= 1)
@@ -84,6 +116,7 @@ namespace Gsplat
             PackedSH2Buffer = null;
             PackedSH3Buffer?.Dispose();
             PackedSH3Buffer = null;
+            DisposePvgBuffers();
         }
     }
 }

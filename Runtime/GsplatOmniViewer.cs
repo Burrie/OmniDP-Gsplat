@@ -8,6 +8,7 @@ using UnityEngine.Rendering;
 namespace Gsplat
 {
     [ExecuteAlways]
+    [AddComponentMenu("Gsplat/Gsplat Omni Viewer")]
     [RequireComponent(typeof(Camera))]
     public class GsplatOmniViewer : MonoBehaviour
     {
@@ -21,7 +22,8 @@ namespace Gsplat
         [Min(2)] public int ErpWidth = 2048;
         [Min(1)] public int ErpHeight = 1024;
         [Min(0.001f)] public float OmniNearDistance = 0.2f;
-        [Min(0.0f)] public float PositionRefreshThreshold = 0.02f;
+        [Tooltip("Camera translation needed before the hidden ERP is re-rendered. Keep this at 0 for natural HCI/VR movement; increase only when profiling requires it.")]
+        [Min(0.0f)] public float PositionRefreshThreshold = 0.0f;
         public ErpUpdatePolicy UpdatePolicy = ErpUpdatePolicy.OnPositionChange;
         public Color BackgroundColor = Color.clear;
         public bool AutoFindRenderers = true;
@@ -30,8 +32,10 @@ namespace Gsplat
 
         static readonly int k_omniTex = Shader.PropertyToID("_GsplatOmniTex");
         static readonly int k_blitTexture = Shader.PropertyToID("_BlitTexture");
-        static readonly int k_invProjection = Shader.PropertyToID("_GsplatCompositeInvProjection");
-        static readonly int k_cameraToWorld = Shader.PropertyToID("_GsplatCompositeCameraToWorld");
+        static readonly int k_cameraForward = Shader.PropertyToID("_GsplatCompositeCameraForward");
+        static readonly int k_cameraRight = Shader.PropertyToID("_GsplatCompositeCameraRight");
+        static readonly int k_cameraUp = Shader.PropertyToID("_GsplatCompositeCameraUp");
+        static readonly int k_cameraProjectionData = Shader.PropertyToID("_GsplatCompositeProjectionData");
         static readonly int k_omniWorldToCamera = Shader.PropertyToID("_GsplatOmniWorldToCamera");
 
         RenderTexture m_erpTexture;
@@ -40,9 +44,15 @@ namespace Gsplat
         Vector3 m_lastRenderPosition;
         int m_lastRendererSignature;
         bool m_hasRendered;
+        bool m_warnedNoHybridRenderers;
+        bool m_warnedInvalidResources;
+        bool m_warnedMissingCompositeShader;
+        bool m_warnedUrpFeatureMissing;
+        int m_srpFramesWaitingForFeature;
         Matrix4x4 m_omniWorldToCamera;
 
         public RenderTexture ErpTexture => m_erpTexture;
+        public bool HasRenderedErp => m_hasRendered;
 
         void OnEnable()
         {
@@ -72,6 +82,19 @@ namespace Gsplat
 
         void LateUpdate()
         {
+            // SRP/URP drives the ERP pass from its renderer feature. Built-in keeps the image-effect fallback.
+            if (GraphicsSettings.currentRenderPipeline)
+            {
+                if (ShouldRenderErp() && HasHybridRenderers())
+                {
+                    m_srpFramesWaitingForFeature++;
+                    if (m_srpFramesWaitingForFeature > 2)
+                        WarnOnce(ref m_warnedUrpFeatureMissing,
+                            "URP is active but Gsplat Omni Viewer has not received an ERP render pass. Add the GSplat URP Feature to the active Universal Renderer Data.");
+                }
+                return;
+            }
+
             if (ShouldRenderErp())
                 RenderErp(true);
         }
@@ -82,7 +105,7 @@ namespace Gsplat
             m_hasRendered = false;
         }
 
-        bool ShouldRenderErp()
+        public bool ShouldRenderErp()
         {
             if (UpdatePolicy == ErpUpdatePolicy.Manual)
                 return !m_hasRendered;
@@ -103,6 +126,11 @@ namespace Gsplat
             var shader = Shader.Find("Gsplat/ERPToPerspective");
             if (shader)
                 m_compositeMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            else if (!m_warnedMissingCompositeShader)
+            {
+                Debug.LogWarning("Gsplat Omni Viewer could not find shader 'Gsplat/ERPToPerspective'. Hybrid output cannot be composited.", this);
+                m_warnedMissingCompositeShader = true;
+            }
         }
 
         void EnsureErpTexture()
@@ -136,38 +164,10 @@ namespace Gsplat
 
         public void RenderErp(bool forceRendererRefresh)
         {
-            if (!enabled || !GsplatSettings.Instance.Valid || !GsplatSorter.Instance.Valid)
-                return;
-
-            EnsureErpTexture();
-            if (!m_erpTexture)
-                return;
-
-            m_omniWorldToCamera = WorldAlignedCameraMatrix(transform.position);
-
             var cmd = new CommandBuffer { name = "Gsplat Hybrid Omni ERP" };
             try
             {
-                cmd.SetRenderTarget(m_erpTexture);
-                cmd.SetViewport(new Rect(0, 0, ErpWidth, ErpHeight));
-                cmd.ClearRenderTarget(false, true, BackgroundColor);
-                cmd.SetViewProjectionMatrices(m_omniWorldToCamera, Matrix4x4.identity);
-
-                var renderers = GetRenderers();
-                foreach (var renderer in renderers)
-                {
-                    if (!renderer || renderer.RenderMode != GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
-                        continue;
-                    if (!renderer.PrepareRenderer(forceRendererRefresh))
-                        continue;
-
-                    var matrixMv = m_omniWorldToCamera * renderer.transform.localToWorldMatrix;
-                    GsplatSorter.Instance.DispatchSort(cmd, renderer, matrixMv,
-                        GsplatRenderer.GsplatRenderMode.HybridOmniPerspective);
-                    renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight);
-                }
-
-                cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
+                RecordErpRender(cmd, forceRendererRefresh);
                 Graphics.ExecuteCommandBuffer(cmd);
             }
             finally
@@ -175,9 +175,57 @@ namespace Gsplat
                 cmd.Release();
             }
 
+        }
+
+        public bool RecordErpRender(CommandBuffer cmd, bool forceRendererRefresh)
+        {
+            if (!enabled || !GsplatSettings.Instance.Valid || !GsplatSorter.Instance.Valid)
+            {
+                WarnOnce(ref m_warnedInvalidResources,
+                    "Gsplat Omni Viewer cannot render ERP because Gsplat settings or sorter resources are invalid.");
+                return false;
+            }
+
+            EnsureErpTexture();
+            if (!m_erpTexture)
+                return false;
+
+            var renderers = GetRenderers();
+            if (!HasHybridRenderers(renderers))
+            {
+                WarnOnce(ref m_warnedNoHybridRenderers,
+                    "Gsplat Omni Viewer found no active Gsplat Renderer using Hybrid Omni Perspective.");
+                return false;
+            }
+
+            m_warnedNoHybridRenderers = false;
+            m_omniWorldToCamera = WorldAlignedCameraMatrix(transform.position);
+
+            cmd.SetRenderTarget(m_erpTexture);
+            cmd.SetViewport(new Rect(0, 0, ErpWidth, ErpHeight));
+            cmd.ClearRenderTarget(false, true, BackgroundColor);
+            cmd.SetViewProjectionMatrices(m_omniWorldToCamera, Matrix4x4.identity);
+
+            foreach (var renderer in renderers)
+            {
+                if (!renderer || renderer.RenderMode != GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
+                    continue;
+                if (!renderer.PrepareRenderer(forceRendererRefresh))
+                    continue;
+
+                var matrixMv = m_omniWorldToCamera * renderer.transform.localToWorldMatrix;
+                GsplatSorter.Instance.DispatchSort(cmd, renderer, matrixMv,
+                    GsplatRenderer.GsplatRenderMode.HybridOmniPerspective);
+                renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight);
+            }
+
+            cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
             m_lastRenderPosition = transform.position;
-            m_lastRendererSignature = CalculateRendererSignature(GetRenderers());
+            m_lastRendererSignature = CalculateRendererSignature(renderers);
             m_hasRendered = true;
+            m_srpFramesWaitingForFeature = 0;
+            m_warnedUrpFeatureMissing = false;
+            return true;
         }
 
         GsplatRenderer[] GetRenderers()
@@ -192,6 +240,23 @@ namespace Gsplat
         bool RendererSignatureChanged()
         {
             return CalculateRendererSignature(GetRenderers()) != m_lastRendererSignature;
+        }
+
+        bool HasHybridRenderers()
+        {
+            return HasHybridRenderers(GetRenderers());
+        }
+
+        static bool HasHybridRenderers(GsplatRenderer[] renderers)
+        {
+            if (renderers == null)
+                return false;
+
+            foreach (var renderer in renderers)
+                if (renderer && renderer.RenderMode == GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
+                    return true;
+
+            return false;
         }
 
         static int CalculateRendererSignature(GsplatRenderer[] renderers)
@@ -210,6 +275,8 @@ namespace Gsplat
                     hash = hash * 31 + renderer.GetInstanceID();
                     hash = hash * 31 + (renderer.isActiveAndEnabled ? 1 : 0);
                     hash = hash * 31 + (renderer.GsplatAsset ? renderer.GsplatAsset.GetInstanceID() : 0);
+                    hash = hash * 31 + renderer.PvgTime.GetHashCode();
+                    hash = hash * 31 + renderer.CurrentPvgPeriod.GetHashCode();
                     hash = hash * 31 + renderer.transform.position.GetHashCode();
                     hash = hash * 31 + renderer.transform.rotation.GetHashCode();
                     hash = hash * 31 + renderer.transform.lossyScale.GetHashCode();
@@ -227,17 +294,18 @@ namespace Gsplat
 
         public bool TryPrepareCompositeMaterial(Camera targetCamera, out Material material)
         {
-            return TryPrepareCompositeMaterial(targetCamera, null, out material);
+            return TryPrepareCompositeMaterial(targetCamera, null, false, out material);
         }
 
-        bool TryPrepareCompositeMaterial(Camera targetCamera, RenderTexture source, out Material material)
+        bool TryPrepareCompositeMaterial(Camera targetCamera, RenderTexture source, bool allowImmediateErpRender,
+            out Material material)
         {
             material = null;
             EnsureCompositeMaterial();
             if (!m_compositeMaterial || !m_erpTexture)
                 return false;
 
-            if (!m_hasRendered)
+            if (!m_hasRendered && allowImmediateErpRender)
                 RenderErp(true);
             if (!m_hasRendered)
                 return false;
@@ -251,8 +319,13 @@ namespace Gsplat
             if (source)
                 m_compositeMaterial.SetTexture(k_blitTexture, source);
             m_compositeMaterial.SetTexture(k_omniTex, m_erpTexture);
-            m_compositeMaterial.SetMatrix(k_invProjection, targetCamera.projectionMatrix.inverse);
-            m_compositeMaterial.SetMatrix(k_cameraToWorld, targetCamera.cameraToWorldMatrix);
+            var cameraTransform = targetCamera.transform;
+            float tanHalfVerticalFov = Mathf.Tan(targetCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            m_compositeMaterial.SetVector(k_cameraForward, cameraTransform.forward);
+            m_compositeMaterial.SetVector(k_cameraRight, cameraTransform.right);
+            m_compositeMaterial.SetVector(k_cameraUp, cameraTransform.up);
+            m_compositeMaterial.SetVector(k_cameraProjectionData,
+                new Vector4(tanHalfVerticalFov, targetCamera.aspect, 0.0f, 0.0f));
             m_compositeMaterial.SetMatrix(k_omniWorldToCamera, m_omniWorldToCamera);
             material = m_compositeMaterial;
             return true;
@@ -261,7 +334,7 @@ namespace Gsplat
         void OnRenderImage(RenderTexture source, RenderTexture destination)
         {
             m_camera ??= GetComponent<Camera>();
-            if (!TryPrepareCompositeMaterial(m_camera, source, out var material))
+            if (!TryPrepareCompositeMaterial(m_camera, source, true, out var material))
             {
                 Graphics.Blit(source, destination);
                 return;
@@ -285,6 +358,14 @@ namespace Gsplat
                 Destroy(obj);
             else
                 DestroyImmediate(obj);
+        }
+
+        void WarnOnce(ref bool flag, string message)
+        {
+            if (flag)
+                return;
+            Debug.LogWarning(message, this);
+            flag = true;
         }
     }
 }

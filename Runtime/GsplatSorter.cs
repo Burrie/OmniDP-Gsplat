@@ -17,8 +17,10 @@ namespace Gsplat
         public bool Valid { get; }
         public bool ComputeSortRequired { get; }
         public GsplatRenderer.GsplatRenderMode RenderMode { get; }
+        public float CurrentPvgTime { get; }
+        public float CurrentPvgPeriod { get; }
         public void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
-            GsplatRenderer.GsplatRenderMode renderMode);
+            GsplatRenderer.GsplatRenderMode renderMode, float pvgTime, float pvgPeriod);
     }
 
     public interface ISorterResource
@@ -169,7 +171,7 @@ namespace Gsplat
                 Resources = res.Resources
             };
 
-            gs.ComputeDepth(cmd, matrixMv, renderMode);
+            gs.ComputeDepth(cmd, matrixMv, renderMode, gs.CurrentPvgTime, gs.CurrentPvgPeriod);
             m_sortPass.Dispatch(cmd, sorterArgs);
         }
 

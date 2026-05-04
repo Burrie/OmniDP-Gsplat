@@ -58,6 +58,7 @@ namespace Gsplat
 
         public override void Allocate()
         {
+            AllocatePvgData();
             PackedSplats = new uint4[SplatCount];
             if (SHBands >= 1)
                 PackedSH1 = new uint[SplatCount * 2];
@@ -69,7 +70,7 @@ namespace Gsplat
 
         public override GsplatResource CreateResource()
         {
-            return new GsplatResourceSpark(SplatCount, SHBands);
+            return new GsplatResourceSpark(SplatCount, SHBands, IsPvgDynamic);
         }
 
         protected override void _UploadData(GsplatResource resource)
@@ -82,6 +83,7 @@ namespace Gsplat
                 res.PackedSH2Buffer.SetData(PackedSH2);
             if (SHBands == 3)
                 res.PackedSH3Buffer.SetData(PackedSH3);
+            UploadPvgData(resource);
         }
 
         protected override async Task _UploadDataAsync(GsplatResource resource)
@@ -91,6 +93,13 @@ namespace Gsplat
             {
                 var batchSize = (int)Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount - res.UploadedCount);
                 res.PackedSplatsBuffer.SetData(PackedSplats, (int)res.UploadedCount, (int)res.UploadedCount, batchSize);
+                if (IsPvgDynamic)
+                {
+                    res.PvgTimeBuffer.SetData(PvgTimeData, (int)res.UploadedCount,
+                        (int)res.UploadedCount, batchSize);
+                    res.PvgVelocityBuffer.SetData(PvgVelocities, (int)res.UploadedCount,
+                        (int)res.UploadedCount, batchSize);
+                }
 
                 if (SHBands >= 1)
                     res.PackedSH1Buffer.SetData(PackedSH1, 2 * (int)res.UploadedCount, 2 * (int)res.UploadedCount,
@@ -121,10 +130,12 @@ namespace Gsplat
                 propertyBlock.SetBuffer(k_packedSH2Buffer, res.PackedSH2Buffer);
             if (SHBands >= 3)
                 propertyBlock.SetBuffer(k_packedSH3Buffer, res.PackedSH3Buffer);
+            SetupPvgMaterialPropertyBlock(propertyBlock, resource);
         }
 
         public override void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
-            ISorterResource sorterResource, GsplatResource resource, GsplatRenderer.GsplatRenderMode renderMode)
+            ISorterResource sorterResource, GsplatResource resource,
+            GsplatRenderer.GsplatRenderMode renderMode, float pvgTime, float pvgPeriod)
         {
             var res = (GsplatResourceSpark)resource;
             var cs = GsplatMaterial.CalcDepthShader;
@@ -132,6 +143,7 @@ namespace Gsplat
             cmd.SetComputeIntParam(cs, k_splatCount, (int)res.UploadedCount);
             cmd.SetComputeMatrixParam(cs, k_matrixMv, matrixMv);
             cmd.SetComputeIntParam(cs, k_gsplatProjectionMode, (int)renderMode);
+            SetPvgComputeParams(cmd, cs, kernelCalcDepthSpark, resource, pvgTime, pvgPeriod);
             cmd.SetComputeBufferParam(cs, kernelCalcDepthSpark, k_packedSplatsBuffer, res.PackedSplatsBuffer);
             cmd.SetComputeBufferParam(cs, kernelCalcDepthSpark, k_depthBuffer, sorterResource.InputKeys);
             cmd.SetComputeBufferParam(cs, kernelCalcDepthSpark, k_orderBuffer, sorterResource.OrderBuffer);
@@ -161,9 +173,11 @@ namespace Gsplat
                 throw new NotSupportedException("currently files larger than 2GB are not supported");
 
             var plyInfo = new PlyHeaderInfo(fs);
+            plyInfo.ValidatePvgProperties();
             var shCoeffs = plyInfo.SHPropertyCount / 3;
             SplatCount = plyInfo.VertexCount;
             SHBands = GsplatUtils.CalcSHBandsFromSHPropertyCount(plyInfo.SHPropertyCount);
+            IsPvgDynamic = plyInfo.IsPvgDynamic;
 
             if (SHBands > 3 || GsplatUtils.SHBandsToCoefficientCount(SHBands) * 3 != plyInfo.SHPropertyCount)
                 throw new NotSupportedException($"unexpected SH property count {plyInfo.SHPropertyCount}");
@@ -227,7 +241,19 @@ namespace Gsplat
                     properties[plyInfo.RotationOffset + 2],
                     properties[plyInfo.RotationOffset + 3]);
 
-                PackedSplats[i] = PackSplat(color, position, scale, rotation);
+                if (IsPvgDynamic)
+                {
+                    var pvgTimeData = new Vector2(
+                        properties[plyInfo.PvgTOffset],
+                        properties[plyInfo.PvgScaleTOffset]);
+                    var pvgVelocity = new Vector3(
+                        properties[plyInfo.PvgVelocity0Offset],
+                        properties[plyInfo.PvgVelocity1Offset],
+                        properties[plyInfo.PvgVelocity2Offset]);
+                    SetPvgData(i, pvgTimeData, pvgVelocity);
+                }
+
+                PackedSplats[i] = PackSplat(color, position, scale, rotation, IsPvgDynamic);
                 progressCallback?.Invoke("Reading vertices", i / (float)plyInfo.VertexCount);
             }
         }
@@ -340,12 +366,13 @@ namespace Gsplat
 
         const float shC0 = 0.28209479177387814f;
 
-        public static uint4 PackSplat(Vector4 color, Vector3 position, Vector3 scale, Quaternion rotation)
+        public static uint4 PackSplat(Vector4 color, Vector3 position, Vector3 scale, Quaternion rotation,
+            bool opacityAlreadyActivated = false)
         {
             byte uR = GsplatUtils.FloatToByte(color.x * shC0 + 0.5f);
             byte uG = GsplatUtils.FloatToByte(color.y * shC0 + 0.5f);
             byte uB = GsplatUtils.FloatToByte(color.z * shC0 + 0.5f);
-            byte uA = GsplatUtils.FloatToByte(GsplatUtils.Sigmoid(color.w));
+            byte uA = GsplatUtils.FloatToByte(opacityAlreadyActivated ? color.w : GsplatUtils.Sigmoid(color.w));
 
             ushort uPosX = Mathf.FloatToHalf(position.x);
             ushort uPosY = Mathf.FloatToHalf(position.y);

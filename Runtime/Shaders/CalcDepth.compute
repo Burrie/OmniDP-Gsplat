@@ -7,10 +7,28 @@
 
 uint _SplatCount;
 int _GsplatProjectionMode;
+int _PvgDynamic;
+float _PvgTime;
+float _PvgPeriod;
 float4x4 _MatrixMV;
 StructuredBuffer<float3> _PositionBuffer;
+StructuredBuffer<float2> _PvgTimeBuffer;
+StructuredBuffer<float3> _PvgVelocityBuffer;
 StructuredBuffer<uint> _OrderBuffer;
 RWStructuredBuffer<float> _DepthBuffer;
+
+#define GSPLAT_EPSILON 0.0000001
+
+float3 ApplyPvgPosition(uint splatId, float3 position)
+{
+    if (_PvgDynamic == 0)
+        return position;
+
+    float2 pvgTimeData = _PvgTimeBuffer[splatId];
+    float3 velocity = _PvgVelocityBuffer[splatId];
+    float a = 2.0 * 3.14159265358979323846 / max(abs(_PvgPeriod), GSPLAT_EPSILON);
+    return position + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
+}
 
 [numthreads(GROUP_SIZE,1,1)]
 void CalcDepth(uint3 id : SV_DispatchThreadID)
@@ -19,7 +37,8 @@ void CalcDepth(uint3 id : SV_DispatchThreadID)
     if (idx >= _SplatCount)
         return;
 
-    float3 pos = _PositionBuffer[_OrderBuffer[idx]];
+    uint splatId = _OrderBuffer[idx];
+    float3 pos = ApplyPvgPosition(splatId, _PositionBuffer[splatId]);
     pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
     _DepthBuffer[idx] = _GsplatProjectionMode == 1 ? -length(pos) : pos.z;
 }
