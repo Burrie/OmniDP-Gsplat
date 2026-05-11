@@ -1,0 +1,618 @@
+// Copyright (c) 2026
+// SPDX-License-Identifier: MIT
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using UnityEngine;
+
+namespace Gsplat
+{
+    [ExecuteAlways]
+    [AddComponentMenu("Gsplat/Training Pose Viewer")]
+    public class GsplatTrainingPoseViewer : MonoBehaviour
+    {
+        [Tooltip("Camera to move to the selected training pose. Defaults to this GameObject's Camera, then Camera.main.")]
+        public Camera TargetCamera;
+        [Tooltip("Absolute or project-relative path to data_views.json.")]
+        public string ViewsJsonPath;
+        [Tooltip("Absolute or project-relative path to data_extrinsics.json.")]
+        public string ExtrinsicsJsonPath;
+        [Tooltip("Optional scene root. Use this when the imported gsplat scene is parented under a transformed GameObject.")]
+        public Transform SceneRoot;
+
+        [Min(0)] public int SelectedPoseIndex;
+        public bool ApplyPosition = true;
+        public bool ApplyRotation = true;
+        public bool ApplyCameraFov = true;
+        [Tooltip("Flip OpenMVG world X before applying the pose. Default off matches the training loader.")]
+        public bool FlipX;
+        [Tooltip("Flip OpenMVG world Y before applying the pose. Default off matches the training loader.")]
+        public bool FlipY;
+        [Tooltip("Flip OpenMVG world Z before applying the pose. Default off matches the training loader.")]
+        public bool FlipZ;
+
+        [SerializeField] TrainingPoseInfo[] m_poses = Array.Empty<TrainingPoseInfo>();
+        [SerializeField] string m_status = "No poses loaded.";
+        [SerializeField] bool m_loadedSuccessfully;
+
+        public int PoseCount => m_poses?.Length ?? 0;
+        public string Status => m_status;
+        public bool LoadedSuccessfully => m_loadedSuccessfully;
+        public TrainingPoseInfo[] Poses => m_poses;
+
+        [Serializable]
+        public struct TrainingPoseInfo
+        {
+            public int PoseKey;
+            public int ViewKey;
+            public string Filename;
+            public int Width;
+            public int Height;
+            public Vector3 Center;
+            public Vector3 Right;
+            public Vector3 Down;
+            public Vector3 Forward;
+            public float HorizontalFovDegrees;
+            public float VerticalFovDegrees;
+        }
+
+        struct ViewRecord
+        {
+            public int ViewKey;
+            public int PoseKey;
+            public string Filename;
+            public int Width;
+            public int Height;
+        }
+
+        struct ExtrinsicRecord
+        {
+            public int PoseKey;
+            public double[,] Rotation;
+            public Vector3 Center;
+        }
+
+        void Reset()
+        {
+            EnsureTargetCamera();
+        }
+
+        void OnEnable()
+        {
+            EnsureTargetCamera();
+        }
+
+        void OnValidate()
+        {
+            if (m_poses != null && m_poses.Length > 0)
+                SelectedPoseIndex = Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1);
+            else
+                SelectedPoseIndex = 0;
+        }
+
+        public void LoadJson()
+        {
+            try
+            {
+                string viewsPath = ResolvePath(ViewsJsonPath);
+                string extrinsicsPath = ResolvePath(ExtrinsicsJsonPath);
+
+                if (string.IsNullOrWhiteSpace(viewsPath) || !File.Exists(viewsPath))
+                    throw new FileNotFoundException("data_views.json was not found.", ViewsJsonPath);
+                if (string.IsNullOrWhiteSpace(extrinsicsPath) || !File.Exists(extrinsicsPath))
+                    throw new FileNotFoundException("data_extrinsics.json was not found.", ExtrinsicsJsonPath);
+
+                var views = LoadViews(viewsPath);
+                var extrinsics = LoadExtrinsics(extrinsicsPath);
+                var poses = new List<TrainingPoseInfo>();
+                int missingExtrinsics = 0;
+
+                foreach (var view in views.OrderBy(v => Path.GetFileNameWithoutExtension(v.Filename), StringComparer.Ordinal))
+                {
+                    if (!extrinsics.TryGetValue(view.PoseKey, out var extrinsic))
+                    {
+                        missingExtrinsics++;
+                        continue;
+                    }
+
+                    poses.Add(BuildPoseInfo(view, extrinsic));
+                }
+
+                m_poses = poses.ToArray();
+                SelectedPoseIndex = m_poses.Length > 0 ? Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1) : 0;
+                m_loadedSuccessfully = m_poses.Length > 0;
+                m_status = m_poses.Length == 0
+                    ? $"Loaded 0 poses. Views: {views.Count}, extrinsics: {extrinsics.Count}, missing matches: {missingExtrinsics}."
+                    : $"Loaded {m_poses.Length} poses. Skipped {missingExtrinsics} view(s) without matching extrinsics.";
+            }
+            catch (Exception e)
+            {
+                m_poses = Array.Empty<TrainingPoseInfo>();
+                SelectedPoseIndex = 0;
+                m_loadedSuccessfully = false;
+                m_status = $"Failed to load OpenMVG poses: {e.Message}";
+                Debug.LogWarning(m_status, this);
+            }
+        }
+
+        public bool ApplySelectedPose()
+        {
+            EnsureTargetCamera();
+            if (!TargetCamera)
+            {
+                m_status = "No target camera assigned.";
+                return false;
+            }
+
+            if (m_poses == null || m_poses.Length == 0)
+            {
+                m_status = "No loaded poses to apply.";
+                return false;
+            }
+
+            SelectedPoseIndex = Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1);
+            ApplyPose(m_poses[SelectedPoseIndex]);
+            return true;
+        }
+
+        public bool PreviousPose(bool applyAfterSelection)
+        {
+            if (m_poses == null || m_poses.Length == 0)
+                return false;
+            SelectedPoseIndex = (SelectedPoseIndex + m_poses.Length - 1) % m_poses.Length;
+            return !applyAfterSelection || ApplySelectedPose();
+        }
+
+        public bool NextPose(bool applyAfterSelection)
+        {
+            if (m_poses == null || m_poses.Length == 0)
+                return false;
+            SelectedPoseIndex = (SelectedPoseIndex + 1) % m_poses.Length;
+            return !applyAfterSelection || ApplySelectedPose();
+        }
+
+        public string GetPoseLabel(int index)
+        {
+            if (m_poses == null || index < 0 || index >= m_poses.Length)
+                return "<none>";
+            var pose = m_poses[index];
+            string name = string.IsNullOrEmpty(pose.Filename) ? $"pose {pose.PoseKey}" : pose.Filename;
+            return $"{name} (pose {pose.PoseKey})";
+        }
+
+        void ApplyPose(TrainingPoseInfo pose)
+        {
+            var cameraTransform = TargetCamera.transform;
+            Vector3 position = ApplyAxisCorrection(pose.Center);
+            Vector3 down = ApplyAxisCorrection(pose.Down);
+            Vector3 forward = ApplyAxisCorrection(pose.Forward);
+
+            if (forward.sqrMagnitude < 1e-8f || down.sqrMagnitude < 1e-8f)
+            {
+                m_status = $"Pose {pose.PoseKey} has invalid camera axes.";
+                return;
+            }
+
+            var rotation = Quaternion.LookRotation(forward.normalized, (-down).normalized);
+            if (SceneRoot)
+            {
+                position = SceneRoot.TransformPoint(position);
+                rotation = SceneRoot.rotation * rotation;
+            }
+
+            if (ApplyPosition)
+                cameraTransform.position = position;
+            if (ApplyRotation)
+                cameraTransform.rotation = rotation;
+            if (ApplyCameraFov && pose.VerticalFovDegrees > 0.0f)
+                TargetCamera.fieldOfView = pose.VerticalFovDegrees;
+
+            m_status = $"Applied {GetPoseLabel(SelectedPoseIndex)}.";
+        }
+
+        TrainingPoseInfo BuildPoseInfo(ViewRecord view, ExtrinsicRecord extrinsic)
+        {
+            var r = extrinsic.Rotation;
+            Vector3 right = new((float)r[0, 0], (float)r[0, 1], (float)r[0, 2]);
+            Vector3 down = new((float)r[1, 0], (float)r[1, 1], (float)r[1, 2]);
+            Vector3 forward = new((float)r[2, 0], (float)r[2, 1], (float)r[2, 2]);
+
+            const float horizontalFovDegrees = 90.0f;
+            float verticalFovDegrees = horizontalFovDegrees;
+            if (view.Width > 0 && view.Height > 0)
+            {
+                float tanHalfHorizontal = Mathf.Tan(horizontalFovDegrees * 0.5f * Mathf.Deg2Rad);
+                verticalFovDegrees = 2.0f * Mathf.Atan(tanHalfHorizontal * view.Height / view.Width) * Mathf.Rad2Deg;
+            }
+
+            return new TrainingPoseInfo
+            {
+                PoseKey = extrinsic.PoseKey,
+                ViewKey = view.ViewKey,
+                Filename = view.Filename,
+                Width = view.Width,
+                Height = view.Height,
+                Center = extrinsic.Center,
+                Right = right,
+                Down = down,
+                Forward = forward,
+                HorizontalFovDegrees = horizontalFovDegrees,
+                VerticalFovDegrees = verticalFovDegrees
+            };
+        }
+
+        Vector3 ApplyAxisCorrection(Vector3 value)
+        {
+            return new Vector3(
+                FlipX ? -value.x : value.x,
+                FlipY ? -value.y : value.y,
+                FlipZ ? -value.z : value.z);
+        }
+
+        void EnsureTargetCamera()
+        {
+            if (TargetCamera)
+                return;
+            TargetCamera = GetComponent<Camera>();
+            if (!TargetCamera)
+                TargetCamera = Camera.main;
+        }
+
+        static string ResolvePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return path;
+            if (Path.IsPathRooted(path))
+                return path;
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.GetFullPath(Path.Combine(projectRoot, path));
+        }
+
+        static List<ViewRecord> LoadViews(string path)
+        {
+            var root = Json.AsObject(Json.Parse(File.ReadAllText(path)));
+            var views = Json.AsList(Json.Get(root, "views"));
+            var records = new List<ViewRecord>();
+
+            foreach (var viewValue in views)
+            {
+                var view = Json.AsObject(viewValue);
+                int viewKey = Json.ToInt(Json.Get(view, "key"));
+                var value = Json.AsObject(Json.Get(view, "value"));
+                var ptrWrapper = Json.AsObject(Json.Get(value, "ptr_wrapper"));
+                var data = Json.AsObject(Json.Get(ptrWrapper, "data"));
+
+                records.Add(new ViewRecord
+                {
+                    ViewKey = viewKey,
+                    PoseKey = data.TryGetValue("id_pose", out var idPose) ? Json.ToInt(idPose) : viewKey,
+                    Filename = Json.ToString(Json.Get(data, "filename")),
+                    Width = data.TryGetValue("width", out var width) ? Json.ToInt(width) : 0,
+                    Height = data.TryGetValue("height", out var height) ? Json.ToInt(height) : 0
+                });
+            }
+
+            return records;
+        }
+
+        static Dictionary<int, ExtrinsicRecord> LoadExtrinsics(string path)
+        {
+            var root = Json.AsObject(Json.Parse(File.ReadAllText(path)));
+            var extrinsics = Json.AsList(Json.Get(root, "extrinsics"));
+            var records = new Dictionary<int, ExtrinsicRecord>();
+
+            foreach (var extrinsicValue in extrinsics)
+            {
+                var extrinsic = Json.AsObject(extrinsicValue);
+                int key = Json.ToInt(Json.Get(extrinsic, "key"));
+                var value = Json.AsObject(Json.Get(extrinsic, "value"));
+                var rotation = ReadRotation(Json.AsList(Json.Get(value, "rotation")));
+                var center = ReadVector3(Json.AsList(Json.Get(value, "center")));
+
+                records[key] = new ExtrinsicRecord
+                {
+                    PoseKey = key,
+                    Rotation = rotation,
+                    Center = center
+                };
+            }
+
+            return records;
+        }
+
+        static double[,] ReadRotation(List<object> rows)
+        {
+            if (rows.Count != 3)
+                throw new FormatException("rotation must contain 3 rows.");
+
+            var rotation = new double[3, 3];
+            for (int y = 0; y < 3; y++)
+            {
+                var row = Json.AsList(rows[y]);
+                if (row.Count != 3)
+                    throw new FormatException("each rotation row must contain 3 values.");
+                for (int x = 0; x < 3; x++)
+                    rotation[y, x] = Json.ToDouble(row[x]);
+            }
+
+            return rotation;
+        }
+
+        static Vector3 ReadVector3(List<object> values)
+        {
+            if (values.Count != 3)
+                throw new FormatException("center must contain 3 values.");
+            return new Vector3((float)Json.ToDouble(values[0]), (float)Json.ToDouble(values[1]),
+                (float)Json.ToDouble(values[2]));
+        }
+
+        static class Json
+        {
+            public static object Parse(string json)
+            {
+                using var parser = new Parser(json);
+                return parser.ParseValue();
+            }
+
+            public static object Get(Dictionary<string, object> obj, string key)
+            {
+                if (!obj.TryGetValue(key, out var value))
+                    throw new KeyNotFoundException($"Missing JSON property '{key}'.");
+                return value;
+            }
+
+            public static Dictionary<string, object> AsObject(object value)
+            {
+                return value as Dictionary<string, object> ??
+                       throw new FormatException("Expected JSON object.");
+            }
+
+            public static List<object> AsList(object value)
+            {
+                return value as List<object> ?? throw new FormatException("Expected JSON array.");
+            }
+
+            public static int ToInt(object value)
+            {
+                return Convert.ToInt32(ToDouble(value));
+            }
+
+            public static double ToDouble(object value)
+            {
+                return value switch
+                {
+                    double d => d,
+                    long l => l,
+                    int i => i,
+                    float f => f,
+                    string s => double.Parse(s, CultureInfo.InvariantCulture),
+                    _ => throw new FormatException("Expected JSON number.")
+                };
+            }
+
+            public static string ToString(object value)
+            {
+                return value as string ?? string.Empty;
+            }
+
+            sealed class Parser : IDisposable
+            {
+                readonly string m_json;
+                int m_index;
+
+                public Parser(string json)
+                {
+                    m_json = json ?? string.Empty;
+                }
+
+                public void Dispose()
+                {
+                }
+
+                public object ParseValue()
+                {
+                    EatWhitespace();
+                    if (m_index >= m_json.Length)
+                        throw new FormatException("Unexpected end of JSON.");
+
+                    char c = PeekChar;
+                    switch (c)
+                    {
+                        case '{':
+                            return ParseObject();
+                        case '[':
+                            return ParseArray();
+                        case '"':
+                            return ParseString();
+                        case '-':
+                            return ParseNumber();
+                        case 't':
+                            return ParseLiteral("true", true);
+                        case 'f':
+                            return ParseLiteral("false", false);
+                        case 'n':
+                            return ParseLiteral("null", null);
+                        default:
+                            if (c >= '0' && c <= '9')
+                                return ParseNumber();
+                            throw new FormatException($"Unexpected JSON token '{c}'.");
+                    }
+                }
+
+                Dictionary<string, object> ParseObject()
+                {
+                    var obj = new Dictionary<string, object>();
+                    NextChar();
+                    while (true)
+                    {
+                        EatWhitespace();
+                        if (PeekChar == '}')
+                        {
+                            NextChar();
+                            return obj;
+                        }
+
+                        string key = ParseString();
+                        EatWhitespace();
+                        if (NextChar() != ':')
+                            throw new FormatException("Expected ':' after object key.");
+                        obj[key] = ParseValue();
+                        EatWhitespace();
+
+                        char c = NextChar();
+                        if (c == '}')
+                            return obj;
+                        if (c != ',')
+                            throw new FormatException("Expected ',' or '}' in object.");
+                    }
+                }
+
+                List<object> ParseArray()
+                {
+                    var array = new List<object>();
+                    NextChar();
+                    while (true)
+                    {
+                        EatWhitespace();
+                        if (PeekChar == ']')
+                        {
+                            NextChar();
+                            return array;
+                        }
+
+                        array.Add(ParseValue());
+                        EatWhitespace();
+
+                        char c = NextChar();
+                        if (c == ']')
+                            return array;
+                        if (c != ',')
+                            throw new FormatException("Expected ',' or ']' in array.");
+                    }
+                }
+
+                string ParseString()
+                {
+                    if (NextChar() != '"')
+                        throw new FormatException("Expected string.");
+
+                    var builder = new StringBuilder();
+                    while (m_index < m_json.Length)
+                    {
+                        char c = NextChar();
+                        if (c == '"')
+                            return builder.ToString();
+                        if (c != '\\')
+                        {
+                            builder.Append(c);
+                            continue;
+                        }
+
+                        if (m_index >= m_json.Length)
+                            throw new FormatException("Unterminated string escape.");
+                        c = NextChar();
+                        switch (c)
+                        {
+                            case '"':
+                            case '\\':
+                            case '/':
+                                builder.Append(c);
+                                break;
+                            case 'b':
+                                builder.Append('\b');
+                                break;
+                            case 'f':
+                                builder.Append('\f');
+                                break;
+                            case 'n':
+                                builder.Append('\n');
+                                break;
+                            case 'r':
+                                builder.Append('\r');
+                                break;
+                            case 't':
+                                builder.Append('\t');
+                                break;
+                            case 'u':
+                                builder.Append(ParseUnicodeEscape());
+                                break;
+                            default:
+                                throw new FormatException($"Unsupported string escape '\\{c}'.");
+                        }
+                    }
+
+                    throw new FormatException("Unterminated string.");
+                }
+
+                char ParseUnicodeEscape()
+                {
+                    if (m_index + 4 > m_json.Length)
+                        throw new FormatException("Invalid unicode escape.");
+                    string hex = m_json.Substring(m_index, 4);
+                    m_index += 4;
+                    return (char)int.Parse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                }
+
+                object ParseNumber()
+                {
+                    int start = m_index;
+                    if (PeekChar == '-')
+                        m_index++;
+                    while (m_index < m_json.Length && char.IsDigit(PeekChar))
+                        m_index++;
+                    bool isFloat = false;
+                    if (m_index < m_json.Length && PeekChar == '.')
+                    {
+                        isFloat = true;
+                        m_index++;
+                        while (m_index < m_json.Length && char.IsDigit(PeekChar))
+                            m_index++;
+                    }
+
+                    if (m_index < m_json.Length && (PeekChar == 'e' || PeekChar == 'E'))
+                    {
+                        isFloat = true;
+                        m_index++;
+                        if (m_index < m_json.Length && (PeekChar == '+' || PeekChar == '-'))
+                            m_index++;
+                        while (m_index < m_json.Length && char.IsDigit(PeekChar))
+                            m_index++;
+                    }
+
+                    string number = m_json.Substring(start, m_index - start);
+                    if (isFloat)
+                        return double.Parse(number, CultureInfo.InvariantCulture);
+                    return long.Parse(number, CultureInfo.InvariantCulture);
+                }
+
+                object ParseLiteral(string literal, object value)
+                {
+                    if (m_index + literal.Length > m_json.Length ||
+                        string.CompareOrdinal(m_json, m_index, literal, 0, literal.Length) != 0)
+                        throw new FormatException($"Expected '{literal}'.");
+                    m_index += literal.Length;
+                    return value;
+                }
+
+                void EatWhitespace()
+                {
+                    while (m_index < m_json.Length && char.IsWhiteSpace(m_json[m_index]))
+                        m_index++;
+                }
+
+                char PeekChar => m_index < m_json.Length ? m_json[m_index] : '\0';
+
+                char NextChar()
+                {
+                    if (m_index >= m_json.Length)
+                        throw new FormatException("Unexpected end of JSON.");
+                    return m_json[m_index++];
+                }
+            }
+        }
+    }
+}
