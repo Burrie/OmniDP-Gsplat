@@ -105,7 +105,7 @@ bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
         }
 
         float distXZ = max(length(center.omniView.xz), GSPLAT_EPSILON);
-        center.lat = atan2(center.omniView.y, distXZ);
+        center.lat = atan2(-center.omniView.y, distXZ);
         center.lon = atan2(center.omniView.x, center.omniView.z);
 
         float2 uv = float2(center.lon / (2.0 * UNITY_PI) + 0.5 + _GsplatOmniWrapOffset,

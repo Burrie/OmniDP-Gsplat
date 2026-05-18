@@ -7,7 +7,9 @@
 
 using System.Collections.Generic;
 using Unity.Collections.LowLevel.Unsafe;
+#if UNITY_EDITOR
 using UnityEditor;
+#endif
 using UnityEngine;
 
 namespace Gsplat

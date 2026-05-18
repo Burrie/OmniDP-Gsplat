@@ -108,7 +108,7 @@ namespace Gsplat
         public bool ShouldRenderErp()
         {
             if (UpdatePolicy == ErpUpdatePolicy.Manual)
-                return !m_hasRendered;
+                return !m_hasRendered || RendererSignatureChanged();
             if (UpdatePolicy == ErpUpdatePolicy.Always || !m_hasRendered)
                 return true;
             if (RendererSignatureChanged())

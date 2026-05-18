@@ -72,7 +72,7 @@ Shader "Gsplat/ERPToPerspective"
                 float3 omniDir = normalize(float3(erpView.x, erpView.y, -erpView.z));
 
                 float distXZ = max(length(omniDir.xz), 0.0000001);
-                float lat = atan2(omniDir.y, distXZ);
+                float lat = atan2(-omniDir.y, distXZ);
                 float lon = atan2(omniDir.x, omniDir.z);
                 float2 erpUv = float2(lon / (2.0 * UNITY_PI) + 0.5, 0.5 - lat / UNITY_PI);
 
@@ -123,7 +123,7 @@ Shader "Gsplat/ERPToPerspective"
                 float3 omniDir = normalize(float3(erpView.x, erpView.y, -erpView.z));
 
                 float distXZ = max(length(omniDir.xz), 0.0000001);
-                float lat = atan2(omniDir.y, distXZ);
+                float lat = atan2(-omniDir.y, distXZ);
                 float lon = atan2(omniDir.x, omniDir.z);
                 float2 erpUv = float2(lon / (2.0 * UNITY_PI) + 0.5, 0.5 - lat / UNITY_PI);
 
