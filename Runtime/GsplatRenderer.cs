@@ -221,11 +221,12 @@ namespace Gsplat
                 1.0f - SplatDownscaleFactor, RenderOrder, PvgTime, CurrentPvgPeriod);
         }
 
-        public void RenderOmni(CommandBuffer cmd, float nearDistance, int targetWidth, int targetHeight)
+        public void RenderOmni(CommandBuffer cmd, float nearDistance, int targetWidth, int targetHeight,
+            GsplatOmniViewer.OmniRasterizer rasterizer)
         {
             m_renderer.RenderOmni(cmd, transform, GammaToLinear, SHDegree, Brightness,
                 1.0f - SplatDownscaleFactor, RenderOrder, nearDistance, targetWidth, targetHeight,
-                PvgTime, CurrentPvgPeriod);
+                PvgTime, CurrentPvgPeriod, rasterizer);
         }
 
         public void Update()

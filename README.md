@@ -76,9 +76,9 @@ The `Async Upload` option enables streaming data from RAM to VRAM, which can hel
 
 ### Hybrid Omni-To-Perspective Rendering
 
-For `.ply` assets optimized with an omnidirectional rasterizer such as ODGS/OmniGS, set the `Gsplat Renderer` component's `Render Mode` to `Hybrid Omni Perspective`. Then add a `Gsplat Omni Viewer` component to the user camera.
+For `.ply` assets optimized with an omnidirectional rasterizer such as ODGS/OmniGS, set the `Gsplat Renderer` component's `Render Mode` to `Hybrid Omni Perspective`. Then add a `Gsplat Omni Viewer` component to the user camera. Use the viewer's `Rasterizer` field to choose `ODGS` or `OmniGS` covariance projection math for the hidden ERP render.
 
-In this mode, the package first renders the ODGS splats into an offscreen 2:1 equirectangular render texture, then composites the correct perspective portion of that texture back onto the camera. Rotating the camera only changes the composite sampling direction; moving the camera re-renders the ERP texture. The ERP render is the expensive part, so start with `1024x512` or `2048x1024` before trying larger render targets.
+In this mode, the package first renders the splats into an offscreen 2:1 equirectangular render texture, then composites the correct perspective portion of that texture back onto the camera. Rotating the camera only changes the composite sampling direction; moving the camera re-renders the ERP texture. The ERP render is the expensive part, so start with `1024x512` or `2048x1024` before trying larger render targets.
 
 For URP, keep the `Gsplat URP Feature` installed on the active URP renderer. The same feature now also runs the hybrid fullscreen composite pass. BiRP uses the `Gsplat Omni Viewer` image-effect path.
 

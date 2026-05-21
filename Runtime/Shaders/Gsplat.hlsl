@@ -45,6 +45,7 @@ struct SplatCorner
 const float4 discardVec = float4(0.0, 0.0, 2.0, 1.0);
 
 int _GsplatProjectionMode;
+int _GsplatOmniRasterizer;
 float _GsplatOmniNearDistance;
 float _GsplatOmniWrapOffset;
 float4 _GsplatTargetSize;
@@ -56,6 +57,8 @@ StructuredBuffer<float3> _PvgVelocityBuffer;
 
 #define GSPLAT_PROJECTION_PERSPECTIVE 0
 #define GSPLAT_PROJECTION_HYBRID_OMNI 1
+#define GSPLAT_OMNI_RASTERIZER_ODGS 0
+#define GSPLAT_OMNI_RASTERIZER_OMNIGS 1
 #define GSPLAT_EPSILON 0.0000001
 
 float PvgAngularFrequency()
@@ -233,6 +236,43 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
 
     if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
     {
+        float3x3 WUnity = (float3x3)center.modelView;
+        float3x3 W = float3x3(
+            WUnity[0][0], WUnity[0][1], WUnity[0][2],
+            WUnity[1][0], WUnity[1][1], WUnity[1][2],
+            -WUnity[2][0], -WUnity[2][1], -WUnity[2][2]
+        );
+
+        if (_GsplatOmniRasterizer == GSPLAT_OMNI_RASTERIZER_OMNIGS)
+        {
+            float3 p = center.omniView;
+            float xz2 = max(p.x * p.x + p.z * p.z, GSPLAT_EPSILON);
+            float invXZ2 = 1.0 / xz2;
+            float xz = sqrt(xz2);
+            float invXZ = 1.0 / max(xz, GSPLAT_EPSILON);
+            float r2 = max(xz2 + p.y * p.y, GSPLAT_EPSILON);
+            float invR2 = 1.0 / r2;
+
+            float wDiv2Pi = _GsplatTargetSize.x / (2.0 * UNITY_PI);
+            float hDivPi = _GsplatTargetSize.y / UNITY_PI;
+
+            float dpxdx = wDiv2Pi * p.z * invXZ2;
+            float dpxdz = -wDiv2Pi * p.x * invXZ2;
+            float dpydx = -hDivPi * p.x * p.y * invXZ * invR2;
+            float dpydy = hDivPi * xz * invR2;
+            float dpydz = -hDivPi * p.z * p.y * invXZ * invR2;
+
+            float3x3 J = float3x3(
+                dpxdx, dpydx, 0.0,
+                0.0, dpydy, 0.0,
+                dpxdz, dpydz, 0.0
+            );
+
+            float3x3 T = mul(W, J);
+            float3x3 cov = mul(mul(transpose(T), Vrk), T);
+            return InitCornerFromCov(source, cov, center, corner);
+        }
+
         float xScale = _GsplatTargetSize.x / (2.0 * UNITY_PI);
         float yScale = _GsplatTargetSize.y / UNITY_PI;
         float sinLat, cosLat, sinLon, cosLon;
@@ -251,12 +291,6 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
             cosLat * sinLon, -sinLat, cosLat * cosLon
         );
 
-        float3x3 WUnity = (float3x3)center.modelView;
-        float3x3 W = float3x3(
-            WUnity[0][0], WUnity[0][1], WUnity[0][2],
-            WUnity[1][0], WUnity[1][1], WUnity[1][2],
-            -WUnity[2][0], -WUnity[2][1], -WUnity[2][2]
-        );
         float3x3 jo = mul(mul(W, sphericalFrame), sqj);
         float3x3 cov = mul(mul(transpose(jo), Vrk), jo);
         return InitCornerFromCov(source, cov, center, corner);

@@ -6,7 +6,7 @@ This file is a handoff note for future work on the upgraded `gsplat_ver2` packag
 
 The package was upgraded from the original perspective-only gsplat renderer toward a hybrid ODGS/OmniGS render mode:
 
-1. Render ODGS-trained splats into an offscreen 2:1 ERP texture from the viewer camera position.
+1. Render omnidirectional splats into an offscreen 2:1 ERP texture from the viewer camera position.
 2. Composite that ERP result back into the normal Unity perspective camera view.
 3. Keep the original perspective path unchanged unless `HybridOmniPerspective` is selected.
 
@@ -34,6 +34,7 @@ If `Gsplat URP Feature` does not appear, clear compile errors first, then reimpo
 - `Runtime/GsplatOmniViewer.cs`
   - New component for the user camera.
   - Allocates the ERP render texture.
+  - Exposes `Rasterizer = ODGS | OmniGS` for selecting the ERP covariance/Jacobian branch.
   - Renders hybrid-mode gsplats into the ERP target.
   - Exposes ERP settings, update policy, clear color, renderer tracking, and debug preview.
   - Provides `TryPrepareCompositeMaterial(...)` for URP/BiRP compositing.
@@ -48,7 +49,7 @@ If `Gsplat URP Feature` does not appear, clear compile errors first, then reimpo
 - `Runtime/Shaders/Gsplat.hlsl`
   - Added hybrid spherical projection branch.
   - Computes center longitude/latitude into ERP clip space.
-  - Ports ODGS-style `computeOmniCov2D` covariance math.
+  - Ports ODGS-style `computeOmniCov2D` covariance math and OmniGS-style direct ERP projection Jacobian math.
   - Draws three horizontal wrap copies through `_GsplatOmniWrapOffset` for seam continuity.
 
 - `Runtime/Shaders/ERPToPerspective.shader`

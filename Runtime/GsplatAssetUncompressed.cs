@@ -180,9 +180,9 @@ namespace Gsplat
                         : GsplatUtils.Sigmoid(properties[plyInfo.OpacityOffset]));
                 for (int j = 0; j < shCoeffs; j++)
                     SHs[i * shCoeffs + j] = new Vector3(
-                        properties[j + plyInfo.SHOffset],
-                        properties[j + plyInfo.SHOffset + shCoeffs],
-                        properties[j + plyInfo.SHOffset + shCoeffs * 2]);
+                        properties[plyInfo.SHOffset + j * 3],
+                        properties[plyInfo.SHOffset + j * 3 + 1],
+                        properties[plyInfo.SHOffset + j * 3 + 2]);
                 Scales[i] = new Vector3(
                     Mathf.Exp(properties[plyInfo.ScaleOffset]),
                     Mathf.Exp(properties[plyInfo.ScaleOffset + 1]),

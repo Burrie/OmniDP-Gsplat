@@ -202,9 +202,10 @@ namespace Gsplat
                     var shBandData = new float[bandSize * 3]; // x3 for rgb
                     for (int k = 0; k < bandSize; k++)
                     {
-                        shBandData[k * 3] = properties[shReadOffset + k + plyInfo.SHOffset];
-                        shBandData[k * 3 + 1] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs];
-                        shBandData[k * 3 + 2] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs * 2];
+                        var coefficientOffset = plyInfo.SHOffset + (shReadOffset + k) * 3;
+                        shBandData[k * 3] = properties[coefficientOffset];
+                        shBandData[k * 3 + 1] = properties[coefficientOffset + 1];
+                        shBandData[k * 3 + 2] = properties[coefficientOffset + 2];
                     }
 
                     if (j == 1)
@@ -236,10 +237,11 @@ namespace Gsplat
                     properties[plyInfo.ScaleOffset + 1],
                     properties[plyInfo.ScaleOffset + 2]);
 
-                var rotation = new Quaternion(properties[plyInfo.RotationOffset],
+                var rotation = new Quaternion(
                     properties[plyInfo.RotationOffset + 1],
                     properties[plyInfo.RotationOffset + 2],
-                    properties[plyInfo.RotationOffset + 3]);
+                    properties[plyInfo.RotationOffset + 3],
+                    properties[plyInfo.RotationOffset]);
 
                 if (IsPvgDynamic)
                 {

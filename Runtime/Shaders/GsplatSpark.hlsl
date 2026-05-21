@@ -9,6 +9,7 @@ StructuredBuffer<uint4> _PackedSplatsBuffer;
 
 // Implementation taken from spark.js
 // Decode a 24‐bit encoded uint into a quaternion (float4) using the folded octahedral inverse.
+// The shared covariance path expects this decoder to return wxyz.
 float4 DecodeQuatOctXyz88R8(uint encoded)
 {
     // Extract the fields.
@@ -33,7 +34,7 @@ float4 DecodeQuatOctXyz88R8(uint encoded)
     float s = sin(halfTheta);
     float w = cos(halfTheta);
 
-    return float4(axis * s, w);
+    return float4(w, axis.x * s, axis.y * s, axis.z * s);
 }
 
 #define LN_SCALE_MIN -12.0

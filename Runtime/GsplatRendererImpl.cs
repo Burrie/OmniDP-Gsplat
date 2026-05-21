@@ -35,6 +35,7 @@ namespace Gsplat
         static readonly int k_brightness = Shader.PropertyToID("_Brightness");
         static readonly int k_scaleFactor = Shader.PropertyToID("_ScaleFactor");
         static readonly int k_gsplatProjectionMode = Shader.PropertyToID("_GsplatProjectionMode");
+        static readonly int k_gsplatOmniRasterizer = Shader.PropertyToID("_GsplatOmniRasterizer");
         static readonly int k_gsplatOmniNearDistance = Shader.PropertyToID("_GsplatOmniNearDistance");
         static readonly int k_gsplatOmniWrapOffset = Shader.PropertyToID("_GsplatOmniWrapOffset");
         static readonly int k_gsplatTargetSize = Shader.PropertyToID("_GsplatTargetSize");
@@ -294,7 +295,8 @@ namespace Gsplat
 
         public void RenderOmni(CommandBuffer cmd, Transform transform, bool gammaToLinear = false, int shDegree = 3,
             float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float nearDistance = 0.2f,
-            int targetWidth = 2048, int targetHeight = 1024, float pvgTime = 0.0f, float pvgPeriod = 1.0f)
+            int targetWidth = 2048, int targetHeight = 1024, float pvgTime = 0.0f, float pvgPeriod = 1.0f,
+            GsplatOmniViewer.OmniRasterizer rasterizer = GsplatOmniViewer.OmniRasterizer.ODGS)
         {
             if (m_remainingCount <= 0)
                 return;
@@ -308,7 +310,7 @@ namespace Gsplat
             {
                 SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
                     GsplatRenderer.GsplatRenderMode.HybridOmniPerspective, nearDistance, targetWidth, targetHeight,
-                    wrapOffset, pvgTime, pvgPeriod);
+                    wrapOffset, pvgTime, pvgPeriod, rasterizer);
                 cmd.DrawMeshInstancedProcedural(GsplatSettings.Instance.Mesh, 0, material, k_omniErpPass, instanceCount,
                     m_propertyBlock);
             }
@@ -316,13 +318,15 @@ namespace Gsplat
 
         void SetupDrawProperties(Transform transform, bool gammaToLinear, int shDegree, float brightness,
             float scaleFactor, GsplatRenderer.GsplatRenderMode renderMode, float nearDistance, int targetWidth,
-            int targetHeight, float wrapOffset, float pvgTime, float pvgPeriod)
+            int targetHeight, float wrapOffset, float pvgTime, float pvgPeriod,
+            GsplatOmniViewer.OmniRasterizer rasterizer = GsplatOmniViewer.OmniRasterizer.ODGS)
         {
             m_propertyBlock.SetInteger(k_splatCount, (int)m_remainingCount);
             m_propertyBlock.SetInteger(k_gammaToLinear, gammaToLinear ? 1 : 0);
             m_propertyBlock.SetInteger(k_splatInstanceSize, (int)GsplatSettings.Instance.SplatInstanceSize);
             m_propertyBlock.SetInteger(k_shDegree, Math.Min(m_gsplatAsset.SHBands, shDegree));
             m_propertyBlock.SetInteger(k_gsplatProjectionMode, (int)renderMode);
+            m_propertyBlock.SetInteger(k_gsplatOmniRasterizer, (int)rasterizer);
             m_propertyBlock.SetFloat(k_brightness, brightness);
             m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
             m_propertyBlock.SetFloat(k_gsplatOmniNearDistance, nearDistance);

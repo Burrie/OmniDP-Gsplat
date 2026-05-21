@@ -19,9 +19,17 @@ namespace Gsplat
             Manual,
         }
 
+        public enum OmniRasterizer
+        {
+            ODGS = 0,
+            OmniGS = 1,
+        }
+
         [Min(2)] public int ErpWidth = 2048;
         [Min(1)] public int ErpHeight = 1024;
         [Min(0.001f)] public float OmniNearDistance = 0.2f;
+        [Tooltip("Projection/covariance math used when rendering the hidden ERP target. ODGS preserves the previous hybrid behavior; OmniGS uses the direct ERP projection Jacobian from OmniGS.")]
+        public OmniRasterizer Rasterizer = OmniRasterizer.ODGS;
         [Tooltip("Camera translation needed before the hidden ERP is re-rendered. Keep this at 0 for natural HCI/VR movement; increase only when profiling requires it.")]
         [Min(0.0f)] public float PositionRefreshThreshold = 0.0f;
         public ErpUpdatePolicy UpdatePolicy = ErpUpdatePolicy.OnPositionChange;
@@ -43,6 +51,7 @@ namespace Gsplat
         Camera m_camera;
         Vector3 m_lastRenderPosition;
         int m_lastRendererSignature;
+        OmniRasterizer m_lastRasterizer;
         bool m_hasRendered;
         bool m_warnedNoHybridRenderers;
         bool m_warnedInvalidResources;
@@ -108,8 +117,10 @@ namespace Gsplat
         public bool ShouldRenderErp()
         {
             if (UpdatePolicy == ErpUpdatePolicy.Manual)
-                return !m_hasRendered || RendererSignatureChanged();
+                return !m_hasRendered || RasterizerChanged() || RendererSignatureChanged();
             if (UpdatePolicy == ErpUpdatePolicy.Always || !m_hasRendered)
+                return true;
+            if (RasterizerChanged())
                 return true;
             if (RendererSignatureChanged())
                 return true;
@@ -216,12 +227,13 @@ namespace Gsplat
                 var matrixMv = m_omniWorldToCamera * renderer.transform.localToWorldMatrix;
                 GsplatSorter.Instance.DispatchSort(cmd, renderer, matrixMv,
                     GsplatRenderer.GsplatRenderMode.HybridOmniPerspective);
-                renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight);
+                renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight, Rasterizer);
             }
 
             cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
             m_lastRenderPosition = transform.position;
             m_lastRendererSignature = CalculateRendererSignature(renderers);
+            m_lastRasterizer = Rasterizer;
             m_hasRendered = true;
             m_srpFramesWaitingForFeature = 0;
             m_warnedUrpFeatureMissing = false;
@@ -240,6 +252,11 @@ namespace Gsplat
         bool RendererSignatureChanged()
         {
             return CalculateRendererSignature(GetRenderers()) != m_lastRendererSignature;
+        }
+
+        bool RasterizerChanged()
+        {
+            return m_hasRendered && m_lastRasterizer != Rasterizer;
         }
 
         bool HasHybridRenderers()

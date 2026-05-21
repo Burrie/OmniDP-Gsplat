@@ -2,9 +2,9 @@
 
 This file isolates the implementation areas added or changed during the ODGS/PVG upgrade workstream. It is intended as an audit guide: use it to inspect whether the code is correct, compare it against the Python/CUDA training code, and decide what to rewrite.
 
-## Module 1: ODGS-Style Rendering
+## Module 1: ODGS/OmniGS-Style Rendering
 
-Goal: add `HybridOmniPerspective` beside the original perspective path. Hybrid mode renders hybrid gsplat renderers into an offscreen ERP texture, then composites that ERP texture back into the normal Unity camera view.
+Goal: add `HybridOmniPerspective` beside the original perspective path. Hybrid mode renders hybrid gsplat renderers into an offscreen ERP texture, lets the viewer choose ODGS or OmniGS covariance projection math for that ERP splat pass, then composites the ERP texture back into the normal Unity camera view.
 
 ### Core Runtime Files
 
@@ -18,14 +18,16 @@ Goal: add `HybridOmniPerspective` beside the original perspective path. Hybrid m
   - Added `RenderOmni(...)` for ERP offscreen drawing.
   - Uses shader pass `OmniERP`.
   - Draws three wrapped copies with `_GsplatOmniWrapOffset = -1, 0, +1` for ERP seam continuity.
-  - Binds projection mode, ERP target size, omni near distance, and PVG parameters into the material property block.
+  - Binds projection mode, selected omni rasterizer, ERP target size, omni near distance, and PVG parameters into the material property block.
 
 - `Runtime/GsplatOmniViewer.cs`
   - New camera-side controller for Hybrid Omni rendering.
   - Owns the ERP `RenderTexture`.
   - Records ERP rendering into a `CommandBuffer`.
   - Provides `TryPrepareCompositeMaterial(...)` for URP/BiRP fullscreen compositing.
+  - Exposes `Rasterizer = ODGS | OmniGS`. `ODGS` preserves the previous branch; `OmniGS` switches the ERP splat covariance to the OmniGS direct ERP projection Jacobian.
   - Re-renders ERP when camera position, renderer transform, renderer asset, `PvgTime`, or `PvgPeriod` changes.
+  - Re-renders ERP when the selected omni rasterizer changes.
   - Current fix: `Manual` update mode still refreshes if renderer state changes.
 
 - `Runtime/GsplatSorter.cs`
@@ -54,10 +56,13 @@ Goal: add `HybridOmniPerspective` beside the original perspective path. Hybrid m
 
 - `Runtime/Shaders/Gsplat.hlsl`
   - Added `_GsplatProjectionMode`.
+  - Added `_GsplatOmniRasterizer`.
   - Added spherical ERP center projection.
   - Added ODGS-style spherical covariance branch in `InitCorner(...)`.
+  - Added OmniGS-style direct ERP projection covariance branch in `InitCorner(...)`.
+  - Current OmniGS fix: the HLSL Jacobian is laid out as the logical GLM matrix from CUDA `computeOmniCov2D_OmniGS`, not as a visual copy of the GLM constructor argument order.
   - Current ODGS convention fix: latitude uses `atan2(-y, distXZ)` to match ODGS CUDA.
-  - Important audit point: this is ODGS-inspired. It does not exactly reproduce the CUDA tile/conic/radius rasterizer.
+  - Important audit point: these branches port the projection/covariance math into the existing Unity quad-splat renderer. They do not exactly reproduce either CUDA tile/conic/radius rasterizer.
 
 - `Runtime/Shaders/ERPToPerspective.shader`
   - Fullscreen composite shader.
@@ -84,6 +89,24 @@ Goal: add `HybridOmniPerspective` beside the original perspective path. Hybrid m
 - Verify the `W` matrix in `Gsplat.hlsl` covariance branch matches ODGS `viewmatrix` layout.
 - Check poles and seam behavior manually. Seam wrapping exists, but pole distortion remains a hard ERP case.
 - Remember that Hybrid is an image-layer composite; it does not provide exact depth interaction with arbitrary Unity geometry.
+
+### OmniGS Comparison Notes
+
+- `GsplatOmniViewer.Rasterizer = OmniGS` keeps the same ERP center projection used by the ODGS branch, because the current ODGS convention is algebraically equivalent to OmniGS's `lat = asin(y / r)` and `pixelY = (lat * 2 / pi + 1) * H / 2` after the sign convention used by this Unity port.
+- The shader branch changes the covariance/Jacobian calculation to OmniGS's direct derivative of the ERP projection:
+  - `x = W / (2*pi) * atan2(px, pz) + W / 2`
+  - `y = H / pi * asin(py / r) + H / 2`
+  - The derivative is evaluated from `center.omniView` and composed with the world-to-view rotation before projecting the 3D covariance.
+  - HLSL matrix layout should stay:
+    `[[dpxdx, dpydx, 0], [0, dpydy, 0], [dpxdz, dpydz, 0]]`.
+- Sorting remains radial distance for both ODGS and OmniGS, matching OmniGS's omnidirectional alpha blending criterion.
+
+### Exactness and Collapse Risk
+
+- Unity does not run the CUDA tile rasterizer. It converts the 2D covariance into an oriented quad footprint and evaluates the Gaussian in the fragment shader.
+- Missing CUDA details such as `conic_opacity`, tile rectangle coverage, and exact radius calculation mainly affect footprint truncation, edge softness, coverage, and performance. They should not by themselves make a PVG/3DGS scene collapse.
+- Collapse-like output is more likely caused by coordinate frame mismatch, quaternion ordering/normalization, scale/opacity activation mismatch, PVG time/period mismatch, or a wrong covariance projection matrix.
+- For visual parity, compare several training poses with `Rasterizer = ODGS` and `Rasterizer = OmniGS`, check ERP debug output first, then inspect the perspective composite.
 
 ## Module 2: PVG-Style Gaussian Modelling
 
@@ -112,12 +135,18 @@ Goal: keep the two render modes intact, but automatically animate Gaussian mean 
   - Keeps static opacity as original 3DGS logit plus sigmoid.
   - Stores uncompressed positions, scales, rotations, colors, and SH coefficients.
   - Assumes spatial scales are raw/log values and applies `exp(...)` on import.
+  - Reads `f_rest_*` as flattened coefficient-major RGB triplets.
 
 - `Runtime/GsplatAssetSpark.cs`
   - Reads PVG fields into dynamic buffers.
   - Treats PVG opacity as already activated alpha.
   - Packs position, color, scale, rotation, and SH data into Spark format.
   - Assumes spatial scales are raw/log values and applies `exp(...)` before log-scale packing.
+  - Reads `f_rest_*` as flattened coefficient-major RGB triplets.
+  - Converts PLY `rot_0..3` from WXYZ into Unity `Quaternion(x,y,z,w)` before Spark packing.
+
+- `Runtime/Shaders/GsplatSpark.hlsl`
+  - Spark quaternion decode returns WXYZ for the shared `CalcCovariance(...)` path.
   - Important audit point: Spark quaternion import/packing should be verified carefully against your chosen PLY quaternion convention.
 
 - `Runtime/GsplatResource.cs`
@@ -195,10 +224,12 @@ Expected property meaning:
 
 - `opacity`: activated alpha in `[0, 1]` for PVG assets.
 - `scale_0..2`: raw/log spatial scale.
-- `rot_0..3`: normalized quaternion. Audit WXYZ versus XYZW carefully.
+- `rot_0..3`: normalized WXYZ quaternion.
 - `t`: temporal center `tau`.
 - `scale_t`: raw/log temporal scale, so Unity computes `beta = exp(scale_t)`.
 - `v_0..2`: PVG velocity vector used directly by the deformation equation.
+- `f_rest_*`: flattened coefficient-major RGB triplets:
+  `coeff0_r, coeff0_g, coeff0_b, coeff1_r, coeff1_g, coeff1_b, ...`.
 
 ### PVG Audit Checklist
 
@@ -208,8 +239,8 @@ Expected property meaning:
 - Confirm `scale_t` is raw/log. If it is already activated beta, Unity will apply `exp(...)` incorrectly.
 - Verify quaternion convention:
   - Uncompressed path stores `rot_0..3` directly into `float4` consumed by `CalcCovariance`.
-  - Spark path constructs `UnityEngine.Quaternion(x, y, z, w)` before packing.
-  - This is a high-priority consistency check if Spark and Uncompressed render differently.
+  - Spark path converts WXYZ PLY data into `UnityEngine.Quaternion(x, y, z, w)` before packing.
+  - Spark shader decode converts back to WXYZ before covariance calculation.
 - Test formula anchors:
   - At `PvgTime = tau`, dynamic mean should equal base position.
   - At `PvgTime = tau + l / 4`, offset should be approximately `v / a`.
