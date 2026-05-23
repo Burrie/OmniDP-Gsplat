@@ -39,6 +39,7 @@ namespace Gsplat
         public bool ShowDebugErp;
 
         static readonly int k_omniTex = Shader.PropertyToID("_GsplatOmniTex");
+        static readonly int k_omniTexTexelSize = Shader.PropertyToID("_GsplatOmniTex_TexelSize");
         static readonly int k_blitTexture = Shader.PropertyToID("_BlitTexture");
         static readonly int k_cameraForward = Shader.PropertyToID("_GsplatCompositeCameraForward");
         static readonly int k_cameraRight = Shader.PropertyToID("_GsplatCompositeCameraRight");
@@ -336,6 +337,9 @@ namespace Gsplat
             if (source)
                 m_compositeMaterial.SetTexture(k_blitTexture, source);
             m_compositeMaterial.SetTexture(k_omniTex, m_erpTexture);
+            m_compositeMaterial.SetVector(k_omniTexTexelSize,
+                new Vector4(1.0f / m_erpTexture.width, 1.0f / m_erpTexture.height,
+                    m_erpTexture.width, m_erpTexture.height));
             var cameraTransform = targetCamera.transform;
             float tanHalfVerticalFov = Mathf.Tan(targetCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
             m_compositeMaterial.SetVector(k_cameraForward, cameraTransform.forward);

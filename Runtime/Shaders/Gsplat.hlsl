@@ -203,19 +203,20 @@ bool InitCornerFromCov(SplatSource source, float3x3 cov, SplatCenter center, out
         ? 2.0 * _GsplatTargetSize.zw
         : center.proj.ww / _ScreenParams.xy;
 
-    // cull against frustum x/y axes
-    float maxL = max(l1, l2);
-    float2 clipLimit = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
-        ? float2(1.0, 1.0)
-        : center.proj.ww;
-    if (any(abs(center.proj.xy) - float2(maxL, maxL) * c > clipLimit))
-    {
-        return false;
-    }
-
     float2 diagonalVector = normalize(float2(offDiagonal, lambda1 - diagonal1));
     float2 v1 = l1 * diagonalVector;
     float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
+
+    // Cull against frustum x/y axes. Use the actual axis-aligned quad extent;
+    // a single max radius can be too tight for rotated splats at the ERP seam.
+    float2 clipLimit = _GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI
+        ? float2(1.0, 1.0)
+        : center.proj.ww;
+    float2 quadExtent = (abs(v1) + abs(v2)) * c;
+    if (any(abs(center.proj.xy) - quadExtent > clipLimit))
+    {
+        return false;
+    }
 
     corner.offset = (source.cornerUV.x * v1 + source.cornerUV.y * v2) * c;
     corner.uv = source.cornerUV;
