@@ -21,13 +21,15 @@ RWStructuredBuffer<float> _DepthBuffer;
 
 float3 ApplyPvgPosition(uint splatId, float3 position)
 {
-    if (_PvgDynamic == 0)
-        return position;
-
-    float2 pvgTimeData = _PvgTimeBuffer[splatId];
-    float3 velocity = _PvgVelocityBuffer[splatId];
-    float a = 2.0 * 3.14159265358979323846 / max(abs(_PvgPeriod), GSPLAT_EPSILON);
-    return position + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
+    float3 result = position;
+    if (_PvgDynamic != 0)
+    {
+        float2 pvgTimeData = _PvgTimeBuffer[splatId];
+        float3 velocity = _PvgVelocityBuffer[splatId];
+        float a = 2.0 * 3.14159265358979323846 / max(abs(_PvgPeriod), GSPLAT_EPSILON);
+        result = position + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
+    }
+    return result;
 }
 
 [numthreads(GROUP_SIZE,1,1)]
