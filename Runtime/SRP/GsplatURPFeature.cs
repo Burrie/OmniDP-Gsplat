@@ -69,7 +69,8 @@ namespace Gsplat
                         return;
 
                     var commandBuffer = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
-                    viewer.RecordErpRender(commandBuffer, false);
+                    if (viewer.RecordErpRender(commandBuffer, false))
+                        viewer.NotifySrpFeatureRendered();
                 });
             }
 #else
@@ -86,7 +87,8 @@ namespace Gsplat
                     return;
 
                 var cmd = CommandBufferPool.Get(k_PassName);
-                viewer.RecordErpRender(cmd, false);
+                if (viewer.RecordErpRender(cmd, false))
+                    viewer.NotifySrpFeatureRendered();
                 if (m_cameraColorTarget != null)
                     CoreUtils.SetRenderTarget(cmd, m_cameraColorTarget);
                 context.ExecuteCommandBuffer(cmd);
@@ -111,6 +113,7 @@ namespace Gsplat
                 if (resourceData.isActiveTargetBackBuffer)
                     return;
 
+                viewer.NotifySrpFeatureRendered();
                 var source = resourceData.activeColorTexture;
                 var destinationDesc = renderGraph.GetTextureDesc(source);
                 destinationDesc.name = "CameraColor-GsplatHybridOmni";
@@ -148,6 +151,7 @@ namespace Gsplat
                     return;
 
                 var cmd = CommandBufferPool.Get(k_PassName);
+                viewer.NotifySrpFeatureRendered();
                 Blitter.BlitCameraTexture(cmd, m_cameraColorTarget, m_tempColor, material, 0);
                 Blitter.BlitCameraTexture(cmd, m_tempColor, m_cameraColorTarget);
                 context.ExecuteCommandBuffer(cmd);

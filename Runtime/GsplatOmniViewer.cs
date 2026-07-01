@@ -58,7 +58,9 @@ namespace Gsplat
         bool m_warnedInvalidResources;
         bool m_warnedMissingCompositeShader;
         bool m_warnedUrpFeatureMissing;
+        bool m_warnedSrpFallback;
         int m_srpFramesWaitingForFeature;
+        int m_lastSrpFeatureFrame = -1;
         Matrix4x4 m_omniWorldToCamera;
 
         public RenderTexture ErpTexture => m_erpTexture;
@@ -96,10 +98,12 @@ namespace Gsplat
             EnsureCompositeMaterial();
             EnsureErpTexture();
             ForceRender();
+            RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
         }
 
         void OnDisable()
         {
+            RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
             ReleaseErpTexture();
             if (m_compositeMaterial)
                 DestroyObject(m_compositeMaterial);
@@ -126,7 +130,7 @@ namespace Gsplat
                     m_srpFramesWaitingForFeature++;
                     if (m_srpFramesWaitingForFeature > 2)
                         WarnOnce(ref m_warnedUrpFeatureMissing,
-                            "URP is active but Gsplat Omni Viewer has not received an ERP render pass. Add the GSplat URP Feature to the active Universal Renderer Data.");
+                            "URP is active but Gsplat Omni Viewer has not received an ERP render pass. The SRP fallback will try to present Hybrid Omni Perspective, but adding the GSplat URP Feature to the active Universal Renderer Data is recommended.");
                 }
                 return;
             }
@@ -139,6 +143,13 @@ namespace Gsplat
         public void ForceRender()
         {
             m_hasRendered = false;
+        }
+
+        public void NotifySrpFeatureRendered()
+        {
+            m_lastSrpFeatureFrame = Time.frameCount;
+            m_srpFramesWaitingForFeature = 0;
+            m_warnedUrpFeatureMissing = false;
         }
 
         public bool ShouldRenderErp()
@@ -376,6 +387,44 @@ namespace Gsplat
             m_compositeMaterial.SetMatrix(k_omniWorldToCamera, m_omniWorldToCamera);
             material = m_compositeMaterial;
             return true;
+        }
+
+        void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)
+        {
+            if (!GraphicsSettings.currentRenderPipeline || !isActiveAndEnabled)
+                return;
+            if (m_lastSrpFeatureFrame == Time.frameCount)
+                return;
+            if (!camera || camera.cameraType != CameraType.Game)
+                return;
+            if (!TryGetActiveViewer(camera, out var viewer) || viewer != this)
+                return;
+            if (!HasHybridRenderers())
+                return;
+
+            WarnOnce(ref m_warnedSrpFallback,
+                "Gsplat Omni Viewer is presenting Hybrid Omni Perspective through the SRP fallback. For best XR performance, add the GSplat URP Feature to the active Universal Renderer Data.");
+
+            var cmd = CommandBufferPool.Get("Gsplat Hybrid Omni SRP Fallback");
+            try
+            {
+                if (ShouldRenderErp())
+                    RecordErpRender(cmd, false);
+                if (TryPrepareCompositeMaterial(camera, out var material))
+                {
+                    if (camera.targetTexture)
+                        cmd.SetRenderTarget(camera.targetTexture);
+                    else
+                        cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+                    cmd.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3, 1);
+                }
+
+                context.ExecuteCommandBuffer(cmd);
+            }
+            finally
+            {
+                CommandBufferPool.Release(cmd);
+            }
         }
 
         void OnRenderImage(RenderTexture source, RenderTexture destination)
