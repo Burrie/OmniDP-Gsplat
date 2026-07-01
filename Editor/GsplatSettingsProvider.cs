@@ -30,6 +30,8 @@ namespace Gsplat.Editor
             EditorGUILayout.PropertyField(
                 m_gsplatSettings.FindProperty(nameof(GsplatSettings.CameraTranslationRefreshTreshold)));
             EditorGUILayout.PropertyField(
+                m_gsplatSettings.FindProperty(nameof(GsplatSettings.CameraRotationRefreshEnabled)));
+            EditorGUILayout.PropertyField(
                 m_gsplatSettings.FindProperty(nameof(GsplatSettings.CameraRotationRefreshTreshold)));
             EditorGUILayout.PropertyField(m_gsplatSettings.FindProperty(nameof(GsplatSettings.DisplayBoundingBoxes)));
             EditorGUILayout.PropertyField(m_gsplatSettings.FindProperty(nameof(GsplatSettings.ShowImportErrors)));

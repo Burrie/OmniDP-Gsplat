@@ -8,6 +8,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Serialization;
+using UnityEngine.XR;
 
 namespace Gsplat
 {
@@ -48,6 +49,13 @@ namespace Gsplat
         public float PvgTime = 0.0f;
         [Tooltip("PVG cycle period l. Used only when the assigned PLY asset contains t, scale_t, and v_* properties.")]
         [Min(k_MinPvgPeriod)] public float PvgPeriod = 0.2f;
+        [Tooltip("If enabled, changing PVG time forces a full splat resort immediately. Disable on XR to keep animation responsive.")]
+        public bool ResortOnEveryPvgTimeChange = false;
+        [Tooltip("Minimum PVG time delta before animation forces a resort. Set to 0 for exact sorting on every time change.")]
+        [Min(0.0f)] public float PvgSortTimeStep = 0.05f;
+        [Tooltip("When running on an XR device, throttle the expensive GPU sort even if Sort Mode is Always.")]
+        public bool UseXrSortThrottle = true;
+        [Range(1, 60)] public uint XrSortRefreshRate = 6;
 
         [Tooltip("Does cutouts update the Gsplat world bounds? (Costly on moving cutouts)")]
         public bool CutoutsUpdateBounds = true;
@@ -201,18 +209,40 @@ namespace Gsplat
                 ForceRefresh();
 
             PvgPeriod = Mathf.Max(k_MinPvgPeriod, PvgPeriod);
-            if (GsplatAsset.IsPvgDynamic &&
-                (!Mathf.Approximately(PvgTime, m_prevPvgTime) ||
-                 !Mathf.Approximately(PvgPeriod, m_prevPvgPeriod)))
+            if (GsplatAsset.IsPvgDynamic && ShouldRefreshForPvgTime())
             {
                 ForceRefresh();
                 m_prevPvgTime = PvgTime;
                 m_prevPvgPeriod = PvgPeriod;
             }
 
-            m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
+            var sortMode = SortMode;
+            var sortRefreshRate = SortRefreshRate;
+            if (UseXrSortThrottle && XRSettings.isDeviceActive && sortMode == GsplatSortMode.Always)
+            {
+                sortMode = GsplatSortMode.SortEveryNFrames;
+                sortRefreshRate = XrSortRefreshRate == 0 ? 1 : XrSortRefreshRate;
+            }
+
+            if (sortRefreshRate == 0)
+                sortRefreshRate = 1;
+            var cutoutsRefreshRate = CutoutsRefreshRate == 0 ? 1 : CutoutsRefreshRate;
+            m_renderer.EvaluateRefreshRequired(sortMode, sortRefreshRate - 1, cutoutsRefreshRate - 1);
             m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
             return true;
+        }
+
+        bool ShouldRefreshForPvgTime()
+        {
+            if (float.IsNaN(m_prevPvgTime) || float.IsNaN(m_prevPvgPeriod))
+                return true;
+            if (!Mathf.Approximately(PvgPeriod, m_prevPvgPeriod))
+                return true;
+            if (Mathf.Approximately(PvgTime, m_prevPvgTime))
+                return false;
+            if (ResortOnEveryPvgTimeChange || PvgSortTimeStep <= 0.0f)
+                return true;
+            return Mathf.Abs(PvgTime - m_prevPvgTime) >= PvgSortTimeStep;
         }
 
         public void RenderPerspective()

@@ -69,7 +69,7 @@ namespace Gsplat
                         return;
 
                     var commandBuffer = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
-                    viewer.RecordErpRender(commandBuffer, true);
+                    viewer.RecordErpRender(commandBuffer, false);
                 });
             }
 #else
@@ -86,7 +86,7 @@ namespace Gsplat
                     return;
 
                 var cmd = CommandBufferPool.Get(k_PassName);
-                viewer.RecordErpRender(cmd, true);
+                viewer.RecordErpRender(cmd, false);
                 if (m_cameraColorTarget != null)
                     CoreUtils.SetRenderTarget(cmd, m_cameraColorTarget);
                 context.ExecuteCommandBuffer(cmd);
@@ -224,8 +224,7 @@ namespace Gsplat
 
         static bool TryGetActiveViewer(Camera camera, out GsplatOmniViewer viewer)
         {
-            viewer = camera ? camera.GetComponent<GsplatOmniViewer>() : null;
-            return viewer && viewer.isActiveAndEnabled;
+            return GsplatOmniViewer.TryGetActiveViewer(camera, out viewer);
         }
     }
 }

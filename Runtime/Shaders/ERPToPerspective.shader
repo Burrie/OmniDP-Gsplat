@@ -29,7 +29,7 @@ Shader "Gsplat/ERPToPerspective"
             #define UNITY_PI 3.14159265358979323846
             #endif
 
-            sampler2D _BlitTexture;
+            UNITY_DECLARE_SCREENSPACE_TEXTURE(_BlitTexture);
             sampler2D _GsplatOmniTex;
             float4 _GsplatOmniTex_TexelSize;
             float4 _GsplatCompositeCameraForward;
@@ -91,7 +91,7 @@ Shader "Gsplat/ERPToPerspective"
             float4 frag(v2f i) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
-                float4 scene = tex2D(_BlitTexture, i.uv);
+                float4 scene = UNITY_SAMPLE_SCREENSPACE_TEXTURE(_BlitTexture, i.uv);
 
                 float2 ndc = i.uv * 2.0 - 1.0;
                 float tanHalfVerticalFov = _GsplatCompositeProjectionData.x;

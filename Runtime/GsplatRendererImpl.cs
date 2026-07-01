@@ -208,10 +208,13 @@ namespace Gsplat
                 {
                     (Vector3 prevCamPos, Vector3 prevCamRot) = prevCamTransform;
 
-                    if ((cam.transform.position - prevCamPos).magnitude >
-                        GsplatSettings.Instance.CameraTranslationRefreshTreshold
-                        || (cam.transform.eulerAngles - prevCamRot).magnitude >
-                        GsplatSettings.Instance.CameraRotationRefreshTreshold)
+                    var translationChanged = (cam.transform.position - prevCamPos).magnitude >
+                                             GsplatSettings.Instance.CameraTranslationRefreshTreshold;
+                    var rotationChanged = GsplatSettings.Instance.CameraRotationRefreshEnabled &&
+                                          (cam.transform.eulerAngles - prevCamRot).magnitude >
+                                          GsplatSettings.Instance.CameraRotationRefreshTreshold;
+
+                    if (translationChanged || rotationChanged)
                     {
                         m_prevCamTransforms[id] = (cam.transform.position, cam.transform.eulerAngles);
                         ForceRefresh();

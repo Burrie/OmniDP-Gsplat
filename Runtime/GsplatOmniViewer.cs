@@ -64,6 +64,32 @@ namespace Gsplat
         public RenderTexture ErpTexture => m_erpTexture;
         public bool HasRenderedErp => m_hasRendered;
 
+        public static bool TryGetActiveViewer(Camera camera, out GsplatOmniViewer viewer)
+        {
+            viewer = camera ? camera.GetComponent<GsplatOmniViewer>() : null;
+            if (viewer && viewer.isActiveAndEnabled)
+                return true;
+
+            var main = Camera.main;
+            if (main && main != camera)
+            {
+                viewer = main.GetComponent<GsplatOmniViewer>();
+                if (viewer && viewer.isActiveAndEnabled)
+                    return true;
+            }
+
+            foreach (var candidate in FindObjectsOfType<GsplatOmniViewer>())
+            {
+                if (!candidate || !candidate.isActiveAndEnabled)
+                    continue;
+                viewer = candidate;
+                return true;
+            }
+
+            viewer = null;
+            return false;
+        }
+
         void OnEnable()
         {
             m_camera = GetComponent<Camera>();
@@ -106,7 +132,7 @@ namespace Gsplat
             }
 
             if (ShouldRenderErp())
-                RenderErp(true);
+                RenderErp(false);
         }
 
         [ContextMenu("Force Render ERP")]
