@@ -195,6 +195,56 @@ namespace Gsplat
             resource.PvgVelocityBuffer.SetData(PvgVelocities);
         }
 
+        protected static void ValidateImportSize(PlyHeaderInfo plyInfo, byte shBands, CompressionMode compression)
+        {
+            if (plyInfo.VertexCount > int.MaxValue)
+                throw new NotSupportedException(
+                    $"PLY contains {plyInfo.VertexCount} splats, but Unity graphics buffers support at most {int.MaxValue} elements.");
+
+            var splatCount = (long)plyInfo.VertexCount;
+            var shCoefficientCount = GsplatUtils.SHBandsToCoefficientCount(shBands);
+
+            switch (compression)
+            {
+                case CompressionMode.Uncompressed:
+                    ValidateArrayLength("SH data", splatCount * shCoefficientCount);
+                    WarnForLargeImport("uncompressed", splatCount * (56 + shCoefficientCount * 12 + (plyInfo.IsPvgDynamic ? 20 : 0)));
+                    break;
+                case CompressionMode.Spark:
+                    if (shBands >= 1) ValidateArrayLength("packed SH1 data", splatCount * 2);
+                    if (shBands >= 2) ValidateArrayLength("packed SH2 data", splatCount * 4);
+                    if (shBands >= 3) ValidateArrayLength("packed SH3 data", splatCount * 4);
+                    WarnForLargeImport("Spark", splatCount * (16 + (shBands >= 1 ? 8 : 0) +
+                        (shBands >= 2 ? 16 : 0) + (shBands >= 3 ? 16 : 0) + (plyInfo.IsPvgDynamic ? 20 : 0)));
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(compression), compression, null);
+            }
+
+            if (plyInfo.IsPvgDynamic)
+            {
+                ValidateArrayLength("PVG time data", splatCount);
+                ValidateArrayLength("PVG velocity data", splatCount);
+            }
+        }
+
+        static void ValidateArrayLength(string label, long elementCount)
+        {
+            if (elementCount > int.MaxValue)
+                throw new NotSupportedException(
+                    $"{label} would need {elementCount} elements, exceeding Unity's managed array limit of {int.MaxValue}.");
+        }
+
+        static void WarnForLargeImport(string compressionName, long estimatedBytes)
+        {
+            const long warningThreshold = 1024L * 1024L * 1024L;
+            if (estimatedBytes < warningThreshold)
+                return;
+
+            Debug.LogWarning(
+                $"Importing this PLY with {compressionName} compression is estimated to create about {estimatedBytes / (1024.0 * 1024.0 * 1024.0):F2} GB of splat data before runtime sorting buffers.");
+        }
+
         protected void SetupPvgMaterialPropertyBlock(MaterialPropertyBlock propertyBlock, GsplatResource resource)
         {
             propertyBlock.SetBuffer(k_pvgTimeBuffer, resource.PvgTimeBuffer);

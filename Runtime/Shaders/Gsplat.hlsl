@@ -88,6 +88,18 @@ float ApplyPvgOpacity(uint splatId, float opacity)
     return opacity * exp(-0.5 * dt * dt / (beta * beta));
 }
 
+// Matches Python's temporal marginal used for dynamic-splat prefiltering.
+float PvgMarginal(uint splatId)
+{
+    if (_PvgDynamic == 0)
+        return 1.0;
+
+    float2 pvgTimeData = _PvgTimeBuffer[splatId];
+    float beta = max(exp(pvgTimeData.y), GSPLAT_EPSILON);
+    float dt = pvgTimeData.x - _PvgTime;
+    return exp(-0.5 * dt * dt / (beta * beta));
+}
+
 bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
 {
     float4 centerView = mul(modelView, float4(modelCenter, 1.0));

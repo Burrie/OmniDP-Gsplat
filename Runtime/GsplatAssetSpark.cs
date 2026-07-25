@@ -168,10 +168,6 @@ namespace Gsplat
         public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null)
         {
             using var fs = new FileStream(plyPath, FileMode.Open, FileAccess.Read);
-            // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
-            if (fs.Length >= 2 * 1024 * 1024 * 1024L)
-                throw new NotSupportedException("currently files larger than 2GB are not supported");
-
             var plyInfo = new PlyHeaderInfo(fs);
             plyInfo.ValidatePvgProperties();
             var shCoeffs = plyInfo.SHPropertyCount / 3;
@@ -186,6 +182,7 @@ namespace Gsplat
                 plyInfo.ScaleOffset == -1 || plyInfo.RotationOffset == -1)
                 throw new NotSupportedException("missing required properties in PLY header");
 
+            ValidateImportSize(plyInfo, SHBands, Compression);
             Allocate();
             var buffer = new byte[plyInfo.PropertyCount * sizeof(float)];
             for (uint i = 0; i < plyInfo.VertexCount; i++)

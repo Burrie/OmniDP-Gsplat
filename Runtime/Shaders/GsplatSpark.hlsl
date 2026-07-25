@@ -72,9 +72,9 @@ bool InitSplatData(SplatSource source, float4x4 modelView, out SplatCenter cente
     float4 quat;
     UnpackSplat(packedSplat, color, modelCenter, scale, quat);
     modelCenter = ApplyPvgPosition(source.id, modelCenter);
-    color.a = ApplyPvgOpacity(source.id, color.a);
-    if (_PvgDynamic != 0 && color.a < 1.0 / 255.0)
+    if (_PvgDynamic != 0 && PvgMarginal(source.id) <= 0.05)
         return false;
+    color.a = ApplyPvgOpacity(source.id, color.a);
     if (!InitCenter(modelView, modelCenter, center))
         return false;
     SplatCovariance cov = CalcCovariance(quat, scale);

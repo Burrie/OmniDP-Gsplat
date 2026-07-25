@@ -22,9 +22,9 @@ bool InitSplatData(SplatSource source, float4x4 modelView, out SplatCenter cente
     if (!InitCorner(source, cov, center, corner))
         return false;
     color = _ColorBuffer[source.id];
-    color.a = ApplyPvgOpacity(source.id, color.a);
-    if (_PvgDynamic != 0 && color.a < 1.0 / 255.0)
+    if (_PvgDynamic != 0 && PvgMarginal(source.id) <= 0.05)
         return false;
+    color.a = ApplyPvgOpacity(source.id, color.a);
     color.rgb = color.rgb * SH_C0 + 0.5;
     return true;
 }

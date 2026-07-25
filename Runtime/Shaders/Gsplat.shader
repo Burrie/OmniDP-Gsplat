@@ -120,11 +120,9 @@ Shader "Gsplat/Standard"
                 float A = dot(i.uv, i.uv);
                 if (A > 1.0) discard;
 
-                float2 absUV = abs(i.uv);
-                float maxUV = max(absUV.x, absUV.y);
-
-                float falloff = -exp((maxUV - _ScaleFactor * 1.16) * 25 * _ScaleFactor);
-                float alpha = (exp(-A * 4.0) + falloff) * i.color.a;
+                float alpha = exp(-A * 4.0) * i.color.a;
+                if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
+                    alpha = min(0.99, alpha);
 
                 if (alpha < 1.0 / 255.0) discard;
                 if (_GammaToLinear)
@@ -244,11 +242,9 @@ Shader "Gsplat/Standard"
                 float A = dot(i.uv, i.uv);
                 if (A > 1.0) discard;
 
-                float2 absUV = abs(i.uv);
-                float maxUV = max(absUV.x, absUV.y);
-
-                float falloff = -exp((maxUV - _ScaleFactor * 1.16) * 25 * _ScaleFactor);
-                float alpha = (exp(-A * 4.0) + falloff) * i.color.a;
+                float alpha = exp(-A * 4.0) * i.color.a;
+                if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
+                    alpha = min(0.99, alpha);
 
                 if (alpha < 1.0 / 255.0) discard;
                 if (_GammaToLinear)

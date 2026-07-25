@@ -405,7 +405,7 @@ namespace Gsplat
             WarnOnce(ref m_warnedSrpFallback,
                 "Gsplat Omni Viewer is presenting Hybrid Omni Perspective through the SRP fallback. For best XR performance, add the GSplat URP Feature to the active Universal Renderer Data.");
 
-            var cmd = CommandBufferPool.Get("Gsplat Hybrid Omni SRP Fallback");
+            var cmd = GetCommandBuffer("Gsplat Hybrid Omni SRP Fallback");
             try
             {
                 if (ShouldRenderErp())
@@ -423,7 +423,7 @@ namespace Gsplat
             }
             finally
             {
-                CommandBufferPool.Release(cmd);
+                ReleaseCommandBuffer(cmd);
             }
         }
 
@@ -446,7 +446,27 @@ namespace Gsplat
             GUI.DrawTexture(new Rect(8, 8, 256, 128), m_erpTexture, ScaleMode.ScaleToFit, false);
         }
 
-        static void DestroyObject(UnityEngine.Object obj)
+        static CommandBuffer GetCommandBuffer(string name)
+        {
+#if GSPLAT_ENABLE_URP || GSPLAT_ENABLE_HDRP
+            return CommandBufferPool.Get(name);
+#else
+            return new CommandBuffer { name = name };
+#endif
+        }
+
+        static void ReleaseCommandBuffer(CommandBuffer cmd)
+        {
+            if (cmd == null)
+                return;
+#if GSPLAT_ENABLE_URP || GSPLAT_ENABLE_HDRP
+            CommandBufferPool.Release(cmd);
+#else
+            cmd.Release();
+#endif
+        }
+
+        static new void DestroyObject(UnityEngine.Object obj)
         {
             if (!obj)
                 return;

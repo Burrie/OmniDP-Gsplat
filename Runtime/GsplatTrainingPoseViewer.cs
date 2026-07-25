@@ -17,6 +17,8 @@ namespace Gsplat
     {
         [Tooltip("Camera to move to the selected training pose. Defaults to this GameObject's Camera, then Camera.main.")]
         public Camera TargetCamera;
+        [Tooltip("Renderer whose PVG timestamp follows the selected training pose. Defaults to a renderer on this GameObject.")]
+        public GsplatRenderer TargetRenderer;
         [Tooltip("Absolute or project-relative path to data_views.json.")]
         public string ViewsJsonPath;
         [Tooltip("Absolute or project-relative path to data_extrinsics.json.")]
@@ -35,9 +37,26 @@ namespace Gsplat
         [Tooltip("Flip OpenMVG world Z before applying the pose. Default off matches the training loader.")]
         public bool FlipZ;
 
+        [Header("PVG time")]
+        [Tooltip("When enabled, applying a pose also sets TargetRenderer.PvgTime from that pose's camera key.")]
+        public bool ApplyPvgTime = true;
+        [Tooltip("PVG time_duration[0].")]
+        public float PvgTimeStart;
+        [Tooltip("PVG time_duration[1].")]
+        public float PvgTimeEnd = 1.0f;
+        [Tooltip("Derive time_duration as [-frame_interval * (frame_num - 1) / 2, +frame_interval * (frame_num - 1) / 2] instead of using PvgTimeStart/PvgTimeEnd.")]
+        public bool CalculateTimeDurationFromFrameInterval;
+        [Tooltip("Frame interval used when calculating time_duration. Set this to the same --frame_interval used during training.")]
+        [Min(0.000001f)] public float FrameInterval = 1.0f / 30.0f;
+        [Tooltip("Number of frames used by timestamp = start + (end - start) * cam_key / (frames_len - 1). Set 0 to count loaded JSON views automatically.")]
+        [Min(0)] public int FramesLength;
+        [Tooltip("Use the view key as cam_key. Disable to use the matched pose key instead.")]
+        public bool UseViewKeyAsCamKey = true;
+
         [SerializeField] TrainingPoseInfo[] m_poses = Array.Empty<TrainingPoseInfo>();
         [SerializeField] string m_status = "No poses loaded.";
         [SerializeField] bool m_loadedSuccessfully;
+        [SerializeField] int m_loadedFrameCount;
 
         public int PoseCount => m_poses?.Length ?? 0;
         public string Status => m_status;
@@ -47,6 +66,7 @@ namespace Gsplat
         [Serializable]
         public struct TrainingPoseInfo
         {
+            public int CamKey;
             public int PoseKey;
             public int ViewKey;
             public string Filename;
@@ -62,6 +82,7 @@ namespace Gsplat
 
         struct ViewRecord
         {
+            public int CamKey;
             public int ViewKey;
             public int PoseKey;
             public string Filename;
@@ -84,10 +105,12 @@ namespace Gsplat
         void OnEnable()
         {
             EnsureTargetCamera();
+            EnsureTargetRenderer();
         }
 
         void OnValidate()
         {
+            FrameInterval = Mathf.Max(0.000001f, FrameInterval);
             if (m_poses != null && m_poses.Length > 0)
                 SelectedPoseIndex = Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1);
             else
@@ -123,6 +146,7 @@ namespace Gsplat
                 }
 
                 m_poses = poses.ToArray();
+                m_loadedFrameCount = views.Count > 0 ? views.Count : extrinsics.Count;
                 SelectedPoseIndex = m_poses.Length > 0 ? Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1) : 0;
                 m_loadedSuccessfully = m_poses.Length > 0;
                 m_status = m_poses.Length == 0
@@ -132,6 +156,7 @@ namespace Gsplat
             catch (Exception e)
             {
                 m_poses = Array.Empty<TrainingPoseInfo>();
+                m_loadedFrameCount = 0;
                 SelectedPoseIndex = 0;
                 m_loadedSuccessfully = false;
                 m_status = $"Failed to load OpenMVG poses: {e.Message}";
@@ -211,7 +236,46 @@ namespace Gsplat
             if (ApplyCameraFov && pose.VerticalFovDegrees > 0.0f)
                 TargetCamera.fieldOfView = pose.VerticalFovDegrees;
 
-            m_status = $"Applied {GetPoseLabel(SelectedPoseIndex)}.";
+            string pvgStatus = ApplyPvgTimestamp(pose);
+
+            m_status = $"Applied {GetPoseLabel(SelectedPoseIndex)}{pvgStatus}.";
+        }
+
+        string ApplyPvgTimestamp(TrainingPoseInfo pose)
+        {
+            if (!ApplyPvgTime)
+                return string.Empty;
+
+            EnsureTargetRenderer();
+            if (!TargetRenderer)
+                return " (PVG renderer not assigned)";
+
+            int framesLength = GetFramesLength();
+            if (framesLength < 2)
+                return " (PVG needs at least two frames)";
+
+            float timeStart = PvgTimeStart;
+            float timeEnd = PvgTimeEnd;
+            if (CalculateTimeDurationFromFrameInterval)
+            {
+                float halfDuration = FrameInterval * (framesLength - 1) * 0.5f;
+                timeStart = -halfDuration;
+                timeEnd = halfDuration;
+            }
+
+            float normalizedKey = (float)pose.CamKey / (framesLength - 1);
+            TargetRenderer.PvgTime = timeStart + (timeEnd - timeStart) * normalizedKey;
+            TargetRenderer.ForceRefresh();
+            return $" (PVG {TargetRenderer.PvgTime:0.######}, cam_key {pose.CamKey}/{framesLength - 1}, range {timeStart:0.######}..{timeEnd:0.######})";
+        }
+
+        int GetFramesLength()
+        {
+            if (FramesLength > 0)
+                return FramesLength;
+            if (m_loadedFrameCount > 0)
+                return m_loadedFrameCount;
+            return m_poses?.Length ?? 0;
         }
 
         TrainingPoseInfo BuildPoseInfo(ViewRecord view, ExtrinsicRecord extrinsic)
@@ -231,6 +295,7 @@ namespace Gsplat
 
             return new TrainingPoseInfo
             {
+                CamKey = UseViewKeyAsCamKey ? view.CamKey : extrinsic.PoseKey,
                 PoseKey = extrinsic.PoseKey,
                 ViewKey = view.ViewKey,
                 Filename = view.Filename,
@@ -262,6 +327,12 @@ namespace Gsplat
                 TargetCamera = Camera.main;
         }
 
+        void EnsureTargetRenderer()
+        {
+            if (!TargetRenderer)
+                TargetRenderer = GetComponent<GsplatRenderer>();
+        }
+
         static string ResolvePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -288,6 +359,7 @@ namespace Gsplat
 
                 records.Add(new ViewRecord
                 {
+                    CamKey = viewKey,
                     ViewKey = viewKey,
                     PoseKey = data.TryGetValue("id_pose", out var idPose) ? Json.ToInt(idPose) : viewKey,
                     Filename = Json.ToString(Json.Get(data, "filename")),
