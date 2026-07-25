@@ -9,13 +9,16 @@ Shader "Hidden/Gsplat/Ground Truth ERP Backdrop"
         _LongitudeOffsetDegrees ("Longitude Offset Degrees", Float) = 0
         _FlipVertical ("Flip Vertical", Float) = 0
         _Exposure ("Exposure", Float) = 1
+        [Enum(UnityEngine.Rendering.CompareFunction)] _DepthTest ("Depth Test", Float) = 4
     }
     SubShader
     {
         Tags
         {
             "RenderType"="Background"
-            "Queue"="Background"
+            // Render immediately after the skybox. A Background-queue sphere is overwritten by a camera skybox
+            // in Game/VR views even though it remains visible in the Scene view.
+            "Queue"="Transparent-499"
             "IgnoreProjector"="True"
         }
 
@@ -23,7 +26,7 @@ Shader "Hidden/Gsplat/Ground Truth ERP Backdrop"
         {
             Cull Front
             ZWrite Off
-            ZTest Always
+            ZTest [_DepthTest]
 
             CGPROGRAM
             #pragma vertex vert
@@ -42,24 +45,37 @@ Shader "Hidden/Gsplat/Ground Truth ERP Backdrop"
             struct appdata
             {
                 float4 vertex : POSITION;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct v2f
             {
                 float4 vertex : SV_POSITION;
                 float3 localDirection : TEXCOORD0;
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             v2f vert(appdata input)
             {
                 v2f output;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_OUTPUT(v2f, output);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.vertex = UnityObjectToClipPos(input.vertex);
+                // Treat the ERP as an infinitely distant background. This lets normal opaque geometry remain in
+                // front while the frame still passes after the skybox in the transparent render queue.
+                #if defined(UNITY_REVERSED_Z)
+                output.vertex.z = 0.0;
+                #else
+                output.vertex.z = output.vertex.w;
+                #endif
                 output.localDirection = input.vertex.xyz;
                 return output;
             }
 
             float4 frag(v2f input) : SV_Target
             {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 float3 direction = normalize(input.localDirection);
                 float distXZ = max(length(direction.xz), 0.0000001);
                 float longitude = atan2(direction.x, direction.z);

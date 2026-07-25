@@ -66,6 +66,7 @@ namespace Gsplat
         static readonly int k_LongitudeOffset = Shader.PropertyToID("_LongitudeOffsetDegrees");
         static readonly int k_FlipVertical = Shader.PropertyToID("_FlipVertical");
         static readonly int k_Exposure = Shader.PropertyToID("_Exposure");
+        static readonly int k_DepthTest = Shader.PropertyToID("_DepthTest");
 
         public string CurrentFilename => m_currentFilename;
         public string Status => m_status;
@@ -79,11 +80,14 @@ namespace Gsplat
         {
             EnsureTargetCamera();
             EnsureRenderer();
+            RestoreSerializedFrame();
             UpdateMaterialProperties();
+            Application.onBeforeRender += SyncPositionForRender;
         }
 
         void OnDisable()
         {
+            Application.onBeforeRender -= SyncPositionForRender;
             if (m_meshRenderer)
                 m_meshRenderer.enabled = false;
         }
@@ -114,12 +118,7 @@ namespace Gsplat
 
         void LateUpdate()
         {
-            if (FollowCameraPosition)
-            {
-                EnsureTargetCamera();
-                if (TargetCamera && HasIndependentCameraTransform())
-                    transform.position = TargetCamera.transform.position;
-            }
+            SyncPositionToTargetCamera();
 
             if (isActiveAndEnabled)
             {
@@ -211,6 +210,12 @@ namespace Gsplat
             SetRendererEnabled(false);
         }
 
+        [ContextMenu("Reload Current Ground-Truth Frame")]
+        public void ReloadCurrentFrame()
+        {
+            RestoreSerializedFrame();
+        }
+
         void EnsureTargetCamera()
         {
             if (!TargetCamera)
@@ -241,13 +246,25 @@ namespace Gsplat
             if (m_material)
                 return;
 
-            var shader = Shader.Find("Hidden/Gsplat/Ground Truth ERP Backdrop");
-            if (!shader)
+            var template = Resources.Load<Material>("GsplatGroundTruthErpBackdrop");
+            if (template)
             {
-                m_status = "Shader 'Hidden/Gsplat/Ground Truth ERP Backdrop' could not be found.";
+                m_material = new Material(template)
+                {
+                    name = "Gsplat Ground-Truth ERP Backdrop (Runtime)",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
                 return;
             }
 
+            var shader = Shader.Find("Hidden/Gsplat/Ground Truth ERP Backdrop");
+            if (!shader)
+            {
+                m_status = "Ground-truth ERP material/shader could not be found. Reimport the GSplat package.";
+                return;
+            }
+
+            // Fallback for projects opened before the Resources material has been imported.
             m_material = new Material(shader)
             {
                 name = "Gsplat Ground-Truth ERP Backdrop (Runtime)",
@@ -288,14 +305,73 @@ namespace Gsplat
             m_material.SetFloat(k_LongitudeOffset, LongitudeOffsetDegrees);
             m_material.SetFloat(k_FlipVertical, FlipVertical ? 1.0f : 0.0f);
             m_material.SetFloat(k_Exposure, Exposure);
+            m_material.SetInt(k_DepthTest, SystemInfo.usesReversedZBuffer
+                ? (int)CompareFunction.GreaterEqual
+                : (int)CompareFunction.LessEqual);
             if (m_loadedTexture)
                 m_material.SetTexture(k_MainTex, m_loadedTexture);
+        }
+
+        void SyncPositionForRender()
+        {
+            if (Application.isPlaying)
+                SyncPositionToTargetCamera();
+        }
+
+        void SyncPositionToTargetCamera()
+        {
+            if (!FollowCameraPosition)
+                return;
+
+            EnsureTargetCamera();
+            if (TargetCamera && HasIndependentCameraTransform())
+                transform.position = TargetCamera.transform.position;
         }
 
         void SetRendererEnabled(bool enabled)
         {
             if (m_meshRenderer)
                 m_meshRenderer.enabled = enabled && m_material && m_loadedTexture;
+        }
+
+        void RestoreSerializedFrame()
+        {
+            if (m_loadedTexture || string.IsNullOrWhiteSpace(m_currentFilename))
+                return;
+
+            string imagePath;
+            try
+            {
+                imagePath = ResolvePath(m_currentFilename);
+            }
+            catch (Exception e)
+            {
+                m_status = $"Could not restore the saved ground-truth frame path: {e.Message}";
+                SetRendererEnabled(false);
+                return;
+            }
+
+            if (!File.Exists(imagePath))
+            {
+                m_status = $"Saved ground-truth image was not found: {imagePath}";
+                SetRendererEnabled(false);
+                return;
+            }
+
+            if (!TryLoadTexture(imagePath, out var texture, out var error))
+            {
+                m_status = error;
+                SetRendererEnabled(false);
+                return;
+            }
+
+            DestroyUnityObject(m_loadedTexture);
+            m_loadedTexture = texture;
+            m_currentFilename = imagePath;
+            if (m_material)
+                m_material.SetTexture(k_MainTex, m_loadedTexture);
+            SetRendererEnabled(ShowFrame);
+            m_status = $"Restored {Path.GetFileName(imagePath)} ({m_loadedTexture.width} x {m_loadedTexture.height}).";
         }
 
         bool HasIndependentCameraTransform()
