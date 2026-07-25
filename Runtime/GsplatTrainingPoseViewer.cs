@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using UnityEngine;
+using UnityEngine.XR;
 
 namespace Gsplat
 {
@@ -15,15 +16,18 @@ namespace Gsplat
     [AddComponentMenu("Gsplat/Training Pose Viewer")]
     public class GsplatTrainingPoseViewer : MonoBehaviour
     {
-        [Tooltip("Camera to move to the selected training pose. Defaults to this GameObject's Camera, then Camera.main.")]
+        [Tooltip("Center-eye camera used as the training-pose reference. Its transform is never moved while XR is active.")]
         public Camera TargetCamera;
+        [Header("XR locomotion")]
+        [Tooltip("World-space locomotion object to teleport when applying a pose. For Meta Quest, assign LocomotionOrigin (or the LocomotionMotion parent) of OVRCameraRig. The target CenterEye camera must be a descendant of this Transform.")]
+        public Transform LocomotionRoot;
         [Tooltip("Renderer whose PVG timestamp follows the selected training pose. Defaults to a renderer on this GameObject.")]
         public GsplatRenderer TargetRenderer;
         [Tooltip("Absolute or project-relative path to data_views.json.")]
         public string ViewsJsonPath;
         [Tooltip("Absolute or project-relative path to data_extrinsics.json.")]
         public string ExtrinsicsJsonPath;
-        [Tooltip("Optional scene root. Use this when the imported gsplat scene is parented under a transformed GameObject.")]
+        [Tooltip("Optional coordinate root for OpenMVG poses. When empty, the current Transform of TargetRenderer (normally this Gsplat GameObject) is used automatically, including its runtime position, rotation, and scale.")]
         public Transform SceneRoot;
 
         [Min(0)] public int SelectedPoseIndex;
@@ -52,6 +56,12 @@ namespace Gsplat
         [Min(0)] public int FramesLength;
         [Tooltip("Use the view key as cam_key. Disable to use the matched pose key instead.")]
         public bool UseViewKeyAsCamKey = true;
+
+        [Header("Ground-truth ERP frame")]
+        [Tooltip("Optional inward-facing ERP frame displayer. When assigned, applying a training pose also loads that pose's source frame.")]
+        public GsplatGroundTruthFrameDisplayer GroundTruthFrameDisplayer;
+        [Tooltip("Load and display the selected pose's ground-truth ERP frame when a pose is applied.")]
+        public bool ApplyGroundTruthFrame = true;
 
         [SerializeField] TrainingPoseInfo[] m_poses = Array.Empty<TrainingPoseInfo>();
         [SerializeField] string m_status = "No poses loaded.";
@@ -106,6 +116,7 @@ namespace Gsplat
         {
             EnsureTargetCamera();
             EnsureTargetRenderer();
+            EnsureGroundTruthFrameDisplayer();
         }
 
         void OnValidate()
@@ -173,6 +184,13 @@ namespace Gsplat
                 return false;
             }
 
+            if (!CanApplyToTarget(out var targetError))
+            {
+                m_status = targetError;
+                Debug.LogWarning(m_status, this);
+                return false;
+            }
+
             if (m_poses == null || m_poses.Length == 0)
             {
                 m_status = "No loaded poses to apply.";
@@ -180,8 +198,7 @@ namespace Gsplat
             }
 
             SelectedPoseIndex = Mathf.Clamp(SelectedPoseIndex, 0, m_poses.Length - 1);
-            ApplyPose(m_poses[SelectedPoseIndex]);
-            return true;
+            return ApplyPose(m_poses[SelectedPoseIndex]);
         }
 
         public bool PreviousPose(bool applyAfterSelection)
@@ -209,7 +226,7 @@ namespace Gsplat
             return $"{name} (pose {pose.PoseKey})";
         }
 
-        void ApplyPose(TrainingPoseInfo pose)
+        bool ApplyPose(TrainingPoseInfo pose)
         {
             var cameraTransform = TargetCamera.transform;
             Vector3 position = ApplyAxisCorrection(pose.Center);
@@ -219,26 +236,119 @@ namespace Gsplat
             if (forward.sqrMagnitude < 1e-8f || down.sqrMagnitude < 1e-8f)
             {
                 m_status = $"Pose {pose.PoseKey} has invalid camera axes.";
-                return;
+                return false;
+            }
+
+            Transform coordinateRoot = GetCoordinateRoot();
+            if (coordinateRoot)
+            {
+                // TransformPoint/TransformDirection use the root's current world transform every time a pose is
+                // applied. This keeps OpenMVG pose coordinates attached to a GSplat object moved at runtime.
+                position = coordinateRoot.TransformPoint(position);
+                forward = coordinateRoot.TransformDirection(forward);
+                down = coordinateRoot.TransformDirection(down);
+            }
+
+            if (forward.sqrMagnitude < 1e-8f || down.sqrMagnitude < 1e-8f)
+            {
+                m_status = $"Pose {pose.PoseKey} became invalid after applying the GSplat coordinate root.";
+                return false;
             }
 
             var rotation = Quaternion.LookRotation(forward.normalized, (-down).normalized);
-            if (SceneRoot)
-            {
-                position = SceneRoot.TransformPoint(position);
-                rotation = SceneRoot.rotation * rotation;
-            }
 
-            if (ApplyPosition)
-                cameraTransform.position = position;
-            if (ApplyRotation)
-                cameraTransform.rotation = rotation;
-            if (ApplyCameraFov && pose.VerticalFovDegrees > 0.0f)
+            bool teleportedLocomotionRoot = LocomotionRoot;
+            if (!ApplyTrainingPoseToTarget(position, rotation))
+                return false;
+
+            // An XR runtime owns the center-eye projection. Keep its FOV untouched when teleporting a VR rig.
+            if (ApplyCameraFov && !teleportedLocomotionRoot && pose.VerticalFovDegrees > 0.0f)
                 TargetCamera.fieldOfView = pose.VerticalFovDegrees;
 
             string pvgStatus = ApplyPvgTimestamp(pose);
+            string frameStatus = ApplyGroundTruthTrainingFrame(pose, cameraTransform.position, cameraTransform.rotation);
+            string motionStatus = teleportedLocomotionRoot
+                ? $"Teleported {LocomotionRoot.name}"
+                : "Applied legacy camera pose";
+            string coordinateStatus = coordinateRoot ? $" using {coordinateRoot.name}" : string.Empty;
 
-            m_status = $"Applied {GetPoseLabel(SelectedPoseIndex)}{pvgStatus}.";
+            m_status = $"{motionStatus}{coordinateStatus}: {GetPoseLabel(SelectedPoseIndex)}{pvgStatus}{frameStatus}.";
+            return true;
+        }
+
+        bool ApplyTrainingPoseToTarget(Vector3 requestedPosition, Quaternion requestedRotation)
+        {
+            var cameraTransform = TargetCamera.transform;
+            Vector3 targetPosition = ApplyPosition ? requestedPosition : cameraTransform.position;
+            Quaternion targetRotation = ApplyRotation ? requestedRotation : cameraTransform.rotation;
+
+            if (!LocomotionRoot)
+            {
+                // Retain non-XR use of the package, but never overwrite an XR center-eye transform.
+                if (XRSettings.isDeviceActive)
+                {
+                    m_status = "XR is active. Assign LocomotionRoot to the LocomotionMotion parent of OVRCameraRig; CenterEye will not be moved directly.";
+                    Debug.LogWarning(m_status, this);
+                    return false;
+                }
+
+                cameraTransform.SetPositionAndRotation(targetPosition, targetRotation);
+                return true;
+            }
+
+            // Apply a single world-space rigid delta to the locomotion root. This accounts for the current
+            // tracked head offset under OVRCameraRig, so CenterEye reaches the requested OpenMVG pose exactly.
+            Vector3 currentHeadPosition = cameraTransform.position;
+            Quaternion currentHeadRotation = cameraTransform.rotation;
+            Quaternion deltaRotation = targetRotation * Quaternion.Inverse(currentHeadRotation);
+            Vector3 rootToHead = currentHeadPosition - LocomotionRoot.position;
+            Quaternion newRootRotation = deltaRotation * LocomotionRoot.rotation;
+            Vector3 newRootPosition = targetPosition - deltaRotation * rootToHead;
+            LocomotionRoot.SetPositionAndRotation(newRootPosition, newRootRotation);
+            return true;
+        }
+
+        bool CanApplyToTarget(out string error)
+        {
+            if (LocomotionRoot && !TargetCamera.transform.IsChildOf(LocomotionRoot))
+            {
+                error = "LocomotionRoot must be a parent of TargetCamera. Assign the LocomotionMotion parent of OVRCameraRig, not CenterEye itself.";
+                return false;
+            }
+
+            if (!LocomotionRoot && XRSettings.isDeviceActive)
+            {
+                error = "XR is active but LocomotionRoot is not assigned. Assign the LocomotionMotion parent of OVRCameraRig; CenterEye will not be moved directly.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        Transform GetCoordinateRoot()
+        {
+            if (SceneRoot)
+                return SceneRoot;
+
+            EnsureTargetRenderer();
+            return TargetRenderer ? TargetRenderer.transform : null;
+        }
+
+        string ApplyGroundTruthTrainingFrame(TrainingPoseInfo pose, Vector3 cameraPosition, Quaternion cameraRotation)
+        {
+            if (!ApplyGroundTruthFrame)
+                return string.Empty;
+
+            EnsureGroundTruthFrameDisplayer();
+            if (!GroundTruthFrameDisplayer)
+                return string.Empty;
+
+            // The backdrop must follow the same camera that receives the selected OpenMVG pose.
+            GroundTruthFrameDisplayer.TargetCamera = TargetCamera;
+            if (GroundTruthFrameDisplayer.ApplyTrainingFrame(pose.Filename, cameraPosition, cameraRotation))
+                return $" (ground truth {pose.Filename})";
+            return $" (ground truth unavailable: {GroundTruthFrameDisplayer.Status})";
         }
 
         string ApplyPvgTimestamp(TrainingPoseInfo pose)
@@ -331,6 +441,12 @@ namespace Gsplat
         {
             if (!TargetRenderer)
                 TargetRenderer = GetComponent<GsplatRenderer>();
+        }
+
+        void EnsureGroundTruthFrameDisplayer()
+        {
+            if (!GroundTruthFrameDisplayer)
+                GroundTruthFrameDisplayer = GetComponent<GsplatGroundTruthFrameDisplayer>();
         }
 
         static string ResolvePath(string path)

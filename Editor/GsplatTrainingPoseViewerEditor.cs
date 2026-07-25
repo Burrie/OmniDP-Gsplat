@@ -143,15 +143,25 @@ namespace Gsplat.Editor
 
         static void RecordCameraUndo(GsplatTrainingPoseViewer viewer)
         {
+            if (viewer.LocomotionRoot)
+                Undo.RecordObject(viewer.LocomotionRoot, "Teleport XR Locomotion Root to OpenMVG Training Pose");
+
             Camera camera = viewer.TargetCamera;
             if (!camera)
                 camera = viewer.GetComponent<Camera>();
             if (!camera)
                 camera = Camera.main;
-            if (!camera)
+            if (camera && !viewer.LocomotionRoot)
+            {
+                Undo.RecordObject(camera.transform, "Apply OpenMVG Training Pose");
+                Undo.RecordObject(camera, "Apply OpenMVG Training Pose");
+            }
+
+            var groundTruth = viewer.GroundTruthFrameDisplayer;
+            if (!groundTruth)
                 return;
-            Undo.RecordObject(camera.transform, "Apply OpenMVG Training Pose");
-            Undo.RecordObject(camera, "Apply OpenMVG Training Pose");
+            Undo.RecordObject(groundTruth.transform, "Apply OpenMVG Ground-Truth Frame");
+            Undo.RecordObject(groundTruth, "Apply OpenMVG Ground-Truth Frame");
         }
     }
 }
