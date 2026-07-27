@@ -38,6 +38,10 @@ namespace Gsplat
         [Min(0)] public int VerticalBlackPaddingPixels = 224;
         [Tooltip("Use the selected OpenMVG training-pose orientation as the stable ERP reference. GsplatTrainingPoseViewer enables this when it applies a pose, so Debug ERP uses the same camera-relative orientation as the source training frame without locking the tracked VR head rotation.")]
         public bool UseTrainingPoseReference;
+        [Tooltip("Force a fresh Gaussian depth sort immediately before this viewer renders its ERP. Enable this for each eye in stereo VR so the right eye never reuses the left eye's depth order.")]
+        public bool ForceSortPerErpRender;
+        [Tooltip("Composite with a Built-in Render Pipeline camera command buffer instead of OnRenderImage. Enable this for separate Quest left/right eye cameras, whose image-effect callbacks are not reliable on all PCVR runtimes.")]
+        public bool UseBuiltInCameraCommandBufferComposite;
         public ErpUpdatePolicy UpdatePolicy = ErpUpdatePolicy.OnPositionChange;
         public Color BackgroundColor = Color.clear;
         public bool AutoFindRenderers = true;
@@ -57,6 +61,8 @@ namespace Gsplat
         RenderTexture m_displayErpTexture;
         Material m_compositeMaterial;
         Camera m_camera;
+        CommandBuffer m_builtinCompositeCommandBuffer;
+        bool m_builtinCompositeAttached;
         Vector3 m_lastRenderPosition;
         int m_lastRendererSignature;
         OmniRasterizer m_lastRasterizer;
@@ -137,6 +143,7 @@ namespace Gsplat
             m_camera = GetComponent<Camera>();
             EnsureCompositeMaterial();
             EnsureErpTexture();
+            EnsureBuiltInCompositeCommandBuffer();
             ForceRender();
             RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
         }
@@ -144,6 +151,7 @@ namespace Gsplat
         void OnDisable()
         {
             RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
+            ReleaseBuiltInCompositeCommandBuffer();
             ReleaseErpTexture();
             if (m_compositeMaterial)
                 DestroyObject(m_compositeMaterial);
@@ -178,6 +186,8 @@ namespace Gsplat
 
             if (ShouldRenderErp())
                 RenderErp(false);
+
+            UpdateBuiltInCompositeCommandBuffer();
         }
 
         [ContextMenu("Force Render ERP")]
@@ -235,6 +245,56 @@ namespace Gsplat
             }
 
             EnsureDisplayErpTexture();
+        }
+
+        void EnsureBuiltInCompositeCommandBuffer()
+        {
+            if (!UseBuiltInCameraCommandBufferComposite || GraphicsSettings.currentRenderPipeline)
+                return;
+
+            m_camera ??= GetComponent<Camera>();
+            if (!m_camera)
+                return;
+
+            m_builtinCompositeCommandBuffer ??= new CommandBuffer { name = "Gsplat Hybrid Omni Eye Composite" };
+            if (m_builtinCompositeAttached)
+                return;
+
+            m_camera.AddCommandBuffer(CameraEvent.AfterEverything, m_builtinCompositeCommandBuffer);
+            m_builtinCompositeAttached = true;
+        }
+
+        void UpdateBuiltInCompositeCommandBuffer()
+        {
+            if (!UseBuiltInCameraCommandBufferComposite || GraphicsSettings.currentRenderPipeline)
+            {
+                ReleaseBuiltInCompositeCommandBuffer();
+                return;
+            }
+
+            EnsureBuiltInCompositeCommandBuffer();
+            if (m_builtinCompositeCommandBuffer == null)
+                return;
+
+            m_builtinCompositeCommandBuffer.Clear();
+            if (!TryPrepareCompositeMaterial(m_camera, out var material))
+                return;
+
+            // Pass 2 is a premultiplied-alpha overlay. It preserves the eye camera's already-rendered scene
+            // while avoiding OnRenderImage, which can be skipped by the Oculus per-eye presentation path.
+            m_builtinCompositeCommandBuffer.DrawProcedural(Matrix4x4.identity, material, 2,
+                MeshTopology.Triangles, 3, 1);
+        }
+
+        void ReleaseBuiltInCompositeCommandBuffer()
+        {
+            if (m_builtinCompositeAttached && m_camera && m_builtinCompositeCommandBuffer != null)
+                m_camera.RemoveCommandBuffer(CameraEvent.AfterEverything, m_builtinCompositeCommandBuffer);
+            m_builtinCompositeAttached = false;
+            if (m_builtinCompositeCommandBuffer == null)
+                return;
+            m_builtinCompositeCommandBuffer.Release();
+            m_builtinCompositeCommandBuffer = null;
         }
 
         void ReleaseErpTexture()
@@ -342,7 +402,9 @@ namespace Gsplat
             {
                 if (!renderer || renderer.RenderMode != GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
                     continue;
-                if (!renderer.PrepareRenderer(forceRendererRefresh))
+                // A stereo eye must obtain an order buffer for its own viewpoint. The two eye positions are
+                // close, but reusing the other eye's ordering produces visible transparency errors nearby.
+                if (!renderer.PrepareRenderer(forceRendererRefresh || ForceSortPerErpRender))
                     continue;
 
                 var matrixMv = m_omniWorldToCamera * renderer.transform.localToWorldMatrix;
@@ -552,6 +614,11 @@ namespace Gsplat
         void OnRenderImage(RenderTexture source, RenderTexture destination)
         {
             m_camera ??= GetComponent<Camera>();
+            if (UseBuiltInCameraCommandBufferComposite && !GraphicsSettings.currentRenderPipeline)
+            {
+                Graphics.Blit(source, destination);
+                return;
+            }
             if (!TryPrepareCompositeMaterial(m_camera, source, true, out var material))
             {
                 Graphics.Blit(source, destination);

@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using UnityEngine;
+using UnityEngine.Scripting;
 using UnityEngine.XR;
 
 namespace Gsplat
@@ -68,6 +69,8 @@ namespace Gsplat
         public bool ApplyTrainingReferenceToOmniViewer = true;
         [Tooltip("Gsplat Omni Viewer that renders the selected training-pose ERP. When empty, the component on TargetCamera is used.")]
         public GsplatOmniViewer TargetOmniViewer;
+        [Tooltip("Optional stereo bridge beside the centre-eye Gsplat Omni Viewer. When assigned, the selected OpenMVG reference is applied to both physical eye ERP renderers.")]
+        public GsplatStereoOmniRig TargetStereoOmniRig;
 
         [SerializeField] TrainingPoseInfo[] m_poses = Array.Empty<TrainingPoseInfo>();
         [SerializeField] string m_status = "No poses loaded.";
@@ -124,6 +127,14 @@ namespace Gsplat
             EnsureTargetRenderer();
             EnsureGroundTruthFrameDisplayer();
             EnsureTargetOmniViewer();
+        }
+
+        void Start()
+        {
+            // Scene serialization normally contains the editor-loaded poses. Reload as a player fallback so a
+            // build remains functional if the scene was built before the latest JSON data was saved.
+            if (m_poses == null || m_poses.Length == 0)
+                LoadJson();
         }
 
         void OnValidate()
@@ -208,20 +219,35 @@ namespace Gsplat
             return ApplyPose(m_poses[SelectedPoseIndex]);
         }
 
+        [Preserve]
         public bool PreviousPose(bool applyAfterSelection)
         {
             if (m_poses == null || m_poses.Length == 0)
+            {
+                m_status = "No loaded poses. Use LoadJson or assign the serialized pose data.";
                 return false;
+            }
             SelectedPoseIndex = (SelectedPoseIndex + m_poses.Length - 1) % m_poses.Length;
             return !applyAfterSelection || ApplySelectedPose();
         }
 
+        [Preserve]
         public bool NextPose(bool applyAfterSelection)
         {
             if (m_poses == null || m_poses.Length == 0)
+            {
+                m_status = "No loaded poses. Use LoadJson or assign the serialized pose data.";
                 return false;
+            }
             SelectedPoseIndex = (SelectedPoseIndex + 1) % m_poses.Length;
             return !applyAfterSelection || ApplySelectedPose();
+        }
+
+        /// <summary>Player-build-safe UnityEvent entry point for the Next + Apply UI button.</summary>
+        [Preserve]
+        public void NextAndApply()
+        {
+            NextPose(true);
         }
 
         public string GetPoseLabel(int index)
@@ -367,6 +393,13 @@ namespace Gsplat
             if (!ApplyTrainingReferenceToOmniViewer)
                 return string.Empty;
 
+            EnsureTargetStereoOmniRig();
+            if (TargetStereoOmniRig && TargetStereoOmniRig.isActiveAndEnabled && TargetStereoOmniRig.IsStereoActive)
+            {
+                TargetStereoOmniRig.SetTrainingPoseReference(trainingPoseRotation);
+                return " (stereo ERP aligned to training pose)";
+            }
+
             EnsureTargetOmniViewer();
             if (!TargetOmniViewer)
                 return " (Gsplat Omni Viewer not assigned)";
@@ -477,6 +510,12 @@ namespace Gsplat
         {
             if (!TargetOmniViewer && TargetCamera)
                 TargetOmniViewer = TargetCamera.GetComponent<GsplatOmniViewer>();
+        }
+
+        void EnsureTargetStereoOmniRig()
+        {
+            if (!TargetStereoOmniRig && TargetCamera)
+                TargetStereoOmniRig = TargetCamera.GetComponent<GsplatStereoOmniRig>();
         }
 
         static string ResolvePath(string path)
