@@ -32,6 +32,10 @@ namespace Gsplat
         public OmniRasterizer Rasterizer = OmniRasterizer.ODGS;
         [Tooltip("Camera translation needed before the hidden ERP is re-rendered. Keep this at 0 for natural HCI/VR movement; increase only when profiling requires it.")]
         [Min(0.0f)] public float PositionRefreshThreshold = 0.0f;
+        [Tooltip("Present the native ERP in the middle of a taller 2:1 ERP and make the remaining top and bottom rows opaque black. This is a display condition only; OmniGS/ODGS still rasterize at ErpWidth x ErpHeight.")]
+        public bool UseVerticalBlackPadding;
+        [Tooltip("Opaque black rows placed above and below the native ERP when vertical black padding is enabled. For a 1920 x 512 native ERP, 224 creates a 1920 x 960 display ERP.")]
+        [Min(0)] public int VerticalBlackPaddingPixels = 224;
         [Tooltip("Use the selected OpenMVG training-pose orientation as the stable ERP reference. GsplatTrainingPoseViewer enables this when it applies a pose, so Debug ERP uses the same camera-relative orientation as the source training frame without locking the tracked VR head rotation.")]
         public bool UseTrainingPoseReference;
         public ErpUpdatePolicy UpdatePolicy = ErpUpdatePolicy.OnPositionChange;
@@ -50,11 +54,14 @@ namespace Gsplat
         static readonly int k_omniWorldToCamera = Shader.PropertyToID("_GsplatOmniWorldToCamera");
 
         RenderTexture m_erpTexture;
+        RenderTexture m_displayErpTexture;
         Material m_compositeMaterial;
         Camera m_camera;
         Vector3 m_lastRenderPosition;
         int m_lastRendererSignature;
         OmniRasterizer m_lastRasterizer;
+        bool m_lastUseVerticalBlackPadding;
+        int m_lastVerticalBlackPaddingPixels;
         bool m_hasRendered;
         bool m_warnedNoHybridRenderers;
         bool m_warnedInvalidResources;
@@ -66,7 +73,16 @@ namespace Gsplat
         Matrix4x4 m_omniWorldToCamera;
         [SerializeField] Quaternion m_trainingReferenceRotation = Quaternion.identity;
 
+        /// <summary>The native ERP produced directly by the OmniGS/ODGS rasterizer.</summary>
         public RenderTexture ErpTexture => m_erpTexture;
+        /// <summary>The texture presented by Show Debug ERP and VR compositing. It is padded only when enabled.</summary>
+        public RenderTexture DisplayErpTexture => UseVerticalBlackPadding && m_displayErpTexture
+            ? m_displayErpTexture
+            : m_erpTexture;
+        public int DisplayErpWidth => ErpWidth;
+        public int DisplayErpHeight => UseVerticalBlackPadding
+            ? ErpHeight + VerticalBlackPaddingPixels * 2
+            : ErpHeight;
         public bool HasRenderedErp => m_hasRendered;
         public Quaternion TrainingReferenceRotation => m_trainingReferenceRotation;
 
@@ -141,6 +157,7 @@ namespace Gsplat
             ErpHeight = Mathf.Max(1, ErpHeight);
             OmniNearDistance = Mathf.Max(0.001f, OmniNearDistance);
             PositionRefreshThreshold = Mathf.Max(0.0f, PositionRefreshThreshold);
+            VerticalBlackPaddingPixels = Mathf.Max(0, VerticalBlackPaddingPixels);
             ForceRender();
         }
 
@@ -184,6 +201,8 @@ namespace Gsplat
                 return true;
             if (RasterizerChanged())
                 return true;
+            if (PaddingConfigurationChanged())
+                return true;
             if (RendererSignatureChanged())
                 return true;
 
@@ -208,31 +227,69 @@ namespace Gsplat
 
         void EnsureErpTexture()
         {
-            if (m_erpTexture && m_erpTexture.width == ErpWidth && m_erpTexture.height == ErpHeight)
+            if (!m_erpTexture || m_erpTexture.width != ErpWidth || m_erpTexture.height != ErpHeight)
+            {
+                ReleaseErpTexture();
+                m_erpTexture = CreateErpTexture(ErpWidth, ErpHeight, "Gsplat Hybrid Omni ERP");
+                ForceRender();
+            }
+
+            EnsureDisplayErpTexture();
+        }
+
+        void ReleaseErpTexture()
+        {
+            ReleaseTexture(ref m_erpTexture);
+            ReleaseDisplayErpTexture();
+        }
+
+        void EnsureDisplayErpTexture()
+        {
+            if (!UseVerticalBlackPadding)
+            {
+                ReleaseDisplayErpTexture();
+                return;
+            }
+
+            int displayHeight = DisplayErpHeight;
+            if (m_displayErpTexture && m_displayErpTexture.width == ErpWidth &&
+                m_displayErpTexture.height == displayHeight)
                 return;
 
-            ReleaseErpTexture();
-            m_erpTexture = new RenderTexture(ErpWidth, ErpHeight, 0, RenderTextureFormat.ARGBHalf)
+            ReleaseDisplayErpTexture();
+            m_displayErpTexture = CreateErpTexture(ErpWidth, displayHeight,
+                "Gsplat Hybrid Omni ERP (Black Padded)");
+            ForceRender();
+        }
+
+        void ReleaseDisplayErpTexture()
+        {
+            ReleaseTexture(ref m_displayErpTexture);
+        }
+
+        static RenderTexture CreateErpTexture(int width, int height, string name)
+        {
+            var texture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGBHalf)
             {
-                name = "Gsplat Hybrid Omni ERP",
+                name = name,
                 wrapMode = TextureWrapMode.Clamp,
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false,
                 autoGenerateMips = false,
             };
-            m_erpTexture.wrapModeU = TextureWrapMode.Repeat;
-            m_erpTexture.wrapModeV = TextureWrapMode.Clamp;
-            m_erpTexture.Create();
-            ForceRender();
+            texture.wrapModeU = TextureWrapMode.Repeat;
+            texture.wrapModeV = TextureWrapMode.Clamp;
+            texture.Create();
+            return texture;
         }
 
-        void ReleaseErpTexture()
+        static void ReleaseTexture(ref RenderTexture texture)
         {
-            if (!m_erpTexture)
+            if (!texture)
                 return;
-            m_erpTexture.Release();
-            DestroyObject(m_erpTexture);
-            m_erpTexture = null;
+            texture.Release();
+            DestroyObject(texture);
+            texture = null;
         }
 
         public void RenderErp(bool forceRendererRefresh)
@@ -294,10 +351,15 @@ namespace Gsplat
                 renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight, Rasterizer);
             }
 
+            if (UseVerticalBlackPadding)
+                RecordBlackPaddedDisplayErp(cmd);
+
             cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
             m_lastRenderPosition = transform.position;
             m_lastRendererSignature = CalculateRendererSignature(renderers);
             m_lastRasterizer = Rasterizer;
+            m_lastUseVerticalBlackPadding = UseVerticalBlackPadding;
+            m_lastVerticalBlackPaddingPixels = VerticalBlackPaddingPixels;
             m_hasRendered = true;
             m_srpFramesWaitingForFeature = 0;
             m_warnedUrpFeatureMissing = false;
@@ -321,6 +383,26 @@ namespace Gsplat
         bool RasterizerChanged()
         {
             return m_hasRendered && m_lastRasterizer != Rasterizer;
+        }
+
+        bool PaddingConfigurationChanged()
+        {
+            return m_hasRendered && (m_lastUseVerticalBlackPadding != UseVerticalBlackPadding ||
+                                     m_lastVerticalBlackPaddingPixels != VerticalBlackPaddingPixels);
+        }
+
+        void RecordBlackPaddedDisplayErp(CommandBuffer cmd)
+        {
+            if (!m_displayErpTexture || !m_erpTexture)
+                return;
+
+            // The native ERP remains transparent where no splat contributes. Only the newly added top/bottom rows
+            // are opaque black, so normal scene composition remains unchanged within the original 512-pixel content.
+            cmd.SetRenderTarget(m_displayErpTexture);
+            cmd.SetViewport(new Rect(0, 0, m_displayErpTexture.width, m_displayErpTexture.height));
+            cmd.ClearRenderTarget(false, true, Color.black);
+            cmd.CopyTexture(m_erpTexture, 0, 0, 0, 0, ErpWidth, ErpHeight,
+                m_displayErpTexture, 0, 0, 0, VerticalBlackPaddingPixels);
         }
 
         bool HasHybridRenderers()
@@ -399,6 +481,12 @@ namespace Gsplat
             if (!m_hasRendered)
                 return false;
 
+            // RenderErp can create the padded display target. Resolve it only after that render, otherwise the
+            // first frame after enabling padding could briefly composite the native texture.
+            var displayErpTexture = DisplayErpTexture;
+            if (!displayErpTexture)
+                return false;
+
             targetCamera ??= m_camera;
             if (!targetCamera)
                 targetCamera = GetComponent<Camera>();
@@ -407,10 +495,10 @@ namespace Gsplat
 
             if (source)
                 m_compositeMaterial.SetTexture(k_blitTexture, source);
-            m_compositeMaterial.SetTexture(k_omniTex, m_erpTexture);
+            m_compositeMaterial.SetTexture(k_omniTex, displayErpTexture);
             m_compositeMaterial.SetVector(k_omniTexTexelSize,
-                new Vector4(1.0f / m_erpTexture.width, 1.0f / m_erpTexture.height,
-                    m_erpTexture.width, m_erpTexture.height));
+                new Vector4(1.0f / displayErpTexture.width, 1.0f / displayErpTexture.height,
+                    displayErpTexture.width, displayErpTexture.height));
             var cameraTransform = targetCamera.transform;
             float tanHalfVerticalFov = Mathf.Tan(targetCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
             m_compositeMaterial.SetVector(k_cameraForward, cameraTransform.forward);
@@ -475,9 +563,10 @@ namespace Gsplat
 
         void OnGUI()
         {
-            if (!ShowDebugErp || !m_erpTexture)
+            var displayErpTexture = DisplayErpTexture;
+            if (!ShowDebugErp || !displayErpTexture)
                 return;
-            GUI.DrawTexture(new Rect(8, 8, 256, 128), m_erpTexture, ScaleMode.ScaleToFit, false);
+            GUI.DrawTexture(new Rect(8, 8, 256, 128), displayErpTexture, ScaleMode.ScaleToFit, false);
         }
 
         static CommandBuffer GetCommandBuffer(string name)
