@@ -1,7 +1,7 @@
 ﻿// Copyright (c) 2025 Yize Wu
 // SPDX-License-Identifier: MIT
 
-using System.Linq;
+using System;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -70,6 +70,7 @@ namespace Gsplat
         static bool s_warnedMissingOmniViewer;
         float m_prevPvgTime = float.NaN;
         float m_prevPvgPeriod = float.NaN;
+        GsplatCutout[] m_cutouts = Array.Empty<GsplatCutout>();
 
         public bool Valid => GsplatAsset &&
                              (RenderBeforeUploadComplete ? SplatCount > 0 : SplatCount == GsplatAsset.SplatCount);
@@ -94,15 +95,28 @@ namespace Gsplat
         {
             get
             {
-                var cutouts = GsplatCutout.m_RegisteredCutouts
-                    .Where(component => component.enabled)
-                    .Where(component =>
-                        component.m_Target == GsplatCutout.Target.All ||
-                        (component.m_Target == GsplatCutout.Target.Parent && component.transform.parent == transform) ||
-                        (component.m_Target == GsplatCutout.Target.Specific && component.m_SpecifcRenderer == this)
-                    );
-                return cutouts.ToArray();
+                int count = 0;
+                foreach (var component in GsplatCutout.m_RegisteredCutouts)
+                    if (TargetsRenderer(component))
+                        count++;
+
+                if (m_cutouts.Length != count)
+                    m_cutouts = new GsplatCutout[count];
+
+                int index = 0;
+                foreach (var component in GsplatCutout.m_RegisteredCutouts)
+                    if (TargetsRenderer(component))
+                        m_cutouts[index++] = component;
+                return m_cutouts;
             }
+        }
+
+        bool TargetsRenderer(GsplatCutout component)
+        {
+            return component && component.enabled &&
+                   (component.m_Target == GsplatCutout.Target.All ||
+                    (component.m_Target == GsplatCutout.Target.Parent && component.transform.parent == transform) ||
+                    (component.m_Target == GsplatCutout.Target.Specific && component.m_SpecifcRenderer == this));
         }
 
         public bool ComputeSortRequired => m_renderer.ComputeSortRequired;
@@ -132,6 +146,7 @@ namespace Gsplat
         void OnEnable()
         {
             EnsureOpacityInitialized();
+            GsplatRuntimeRegistry.Register(this);
             GsplatSorter.Instance.RegisterGsplat(this);
             m_prevAsset = null;
         }
@@ -139,6 +154,7 @@ namespace Gsplat
         void OnDisable()
         {
             GsplatSorter.Instance.UnregisterGsplat(this);
+            GsplatRuntimeRegistry.Unregister(this);
             m_renderer?.Dispose();
             m_renderer = null;
         }
@@ -280,11 +296,12 @@ namespace Gsplat
 
         public void Update()
         {
-            if (!PrepareRenderer())
-                return;
-
             if (RenderMode == GsplatRenderMode.Perspective)
+            {
+                if (!PrepareRenderer())
+                    return;
                 RenderPerspective();
+            }
             else
                 WarnIfHybridViewerMissing();
         }
@@ -294,8 +311,7 @@ namespace Gsplat
             if (s_warnedMissingOmniViewer)
                 return;
 
-            var viewers = FindObjectsOfType<GsplatOmniViewer>();
-            if (viewers.Any(viewer => viewer && viewer.isActiveAndEnabled))
+            if (GsplatRuntimeRegistry.HasActiveViewer())
                 return;
 
             Debug.LogWarning(

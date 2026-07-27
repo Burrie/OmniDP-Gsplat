@@ -62,6 +62,13 @@ The next steps depend on the Render Pipeline you are using:
 
 Copy or drag & drop the PLY file anywhere into your project's `Assets` folder. The package will then automatically read the file and import it as a derived class of `Gsplat Asset`. The package supports two compression modes for the asset: `Uncompressed` and `Spark` (packed). The default mode is `Spark`, which is inspired by [spark.js](https://github.com/sparkjsdev/spark). You can change the compression mode in the inspector of the imported `Gsplat Asset`.
 
+The PLY importer also exposes a `Runtime Storage` option:
+
+- `Embedded Managed` preserves the original package behavior and serializes the complete model into the imported Unity asset.
+- `Streamed Player Data` stores GPU-ready sections in a validated binary cache and uploads them in bounded batches. Desktop builds include these files automatically under `StreamingAssets/Gsplat`. Use this for large Windows PCVR models to avoid loading the full model into managed RAM before GPU upload.
+
+`Streamed Player Data` currently supports Windows, Linux, and macOS filesystem players. Keep `Embedded Managed` for Android builds.
+
 ### Add Gsplat Renderer
 
 Create or choose a game object in your scene, and add the `Gsplat Renderer` component on it. Point the `Gsplat Asset` field to one of your imported Gsplat Assets. Then it should appear in the viewport.
@@ -74,11 +81,15 @@ The `Brightness` option allows post-hoc scaling of the Gsplat Asset's brightness
 
 The `Async Upload` option enables streaming data from RAM to VRAM, which can help reduce lags when loading the `GsplatRenderer` or setting its enable property to true. When enabled, the renderer can optionally draw before upload completes (`Render Before Upload Complete`), which will render the asset with whatever data has been uploaded so far.
 
+For a fixed model in a desktop PCVR session, open `Project Settings > Gsplat` and set `Player GPU Residency` to `Pin Until Shutdown`. Shared model buffers then survive renderer disable/enable cycles. Embedded model arrays are released from CPU memory after a successful upload in non-Editor players; streamed assets retain only their bounded upload batches.
+
 ### Hybrid Omni-To-Perspective Rendering
 
 For `.ply` assets optimized with an omnidirectional rasterizer such as ODGS/OmniGS, set the `Gsplat Renderer` component's `Render Mode` to `Hybrid Omni Perspective`. Then add a `Gsplat Omni Viewer` component to the user camera. Use the viewer's `Rasterizer` field to choose `ODGS` or `OmniGS` covariance projection math for the hidden ERP render.
 
 In this mode, the package first renders the splats into an offscreen 2:1 equirectangular render texture, then composites the correct perspective portion of that texture back onto the camera. Rotating the camera only changes the composite sampling direction; moving the camera re-renders the ERP texture. The ERP render is the expensive part, so start with `1024x512` or `2048x1024` before trying larger render targets.
+
+`Use Vertical Black Padding` does not allocate a second padded render texture. The composite shader treats the native ERP as the center of a larger logical ERP and samples opaque black above and below it. For a `1920x512` native ERP, set `Vertical Black Padding Pixels` to `224` to obtain a logical `1920x960` display while retaining only the native `1920x512` `ARGBHalf` texture.
 
 For URP, keep the `Gsplat URP Feature` installed on the active URP renderer. The same feature now also runs the hybrid fullscreen composite pass. BiRP uses the `Gsplat Omni Viewer` image-effect path.
 

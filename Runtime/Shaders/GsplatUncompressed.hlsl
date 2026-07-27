@@ -13,7 +13,12 @@ StructuredBuffer<float4> _ColorBuffer;
 bool InitSplatData(SplatSource source, float4x4 modelView, out SplatCenter center, out SplatCorner corner,
                    out float4 color)
 {
-    float3 modelCenter = ApplyPvgPosition(source.id, _PositionBuffer[source.id]);
+    float2 pvgTimeData;
+    float pvgMarginal = EvaluatePvgMarginal(source.id, pvgTimeData);
+    if (pvgMarginal <= 0.05)
+        return false;
+
+    float3 modelCenter = ApplyPvgPosition(source.id, _PositionBuffer[source.id], pvgTimeData);
     if (!InitCenter(modelView, modelCenter, center))
         return false;
     float4 quat = _RotationBuffer[source.id];
@@ -22,9 +27,7 @@ bool InitSplatData(SplatSource source, float4x4 modelView, out SplatCenter cente
     if (!InitCorner(source, cov, center, corner))
         return false;
     color = _ColorBuffer[source.id];
-    if (_PvgDynamic != 0 && PvgMarginal(source.id) <= 0.05)
-        return false;
-    color.a = ApplyPvgOpacity(source.id, color.a);
+    color.a *= pvgMarginal;
     color.rgb = color.rgb * SH_C0 + 0.5;
     return true;
 }

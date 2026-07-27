@@ -3,10 +3,20 @@ using UnityEngine;
 
 namespace Gsplat
 {
+    public enum GsplatUploadState
+    {
+        NotStarted,
+        Uploading,
+        Complete,
+        Failed,
+    }
+
     public abstract class GsplatResource
     {
-        public bool Uploaded;
+        public GsplatUploadState UploadState;
         public uint UploadedCount;
+        public string UploadError;
+        public System.Threading.Tasks.Task UploadTask;
         public GraphicsBuffer PvgTimeBuffer { get; private set; }
         public GraphicsBuffer PvgVelocityBuffer { get; private set; }
 

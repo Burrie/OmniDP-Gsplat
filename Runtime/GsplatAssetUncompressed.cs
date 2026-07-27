@@ -13,6 +13,14 @@ namespace Gsplat
     public class GsplatAssetUncompressed : GsplatAsset
     {
         public override CompressionMode Compression => CompressionMode.Uncompressed;
+        public override long CpuDataBytes =>
+            (Positions?.LongLength ?? 0) * 12L +
+            (Colors?.LongLength ?? 0) * 16L +
+            (SHs?.LongLength ?? 0) * 12L +
+            (Scales?.LongLength ?? 0) * 12L +
+            (Rotations?.LongLength ?? 0) * 16L +
+            (PvgTimeData?.LongLength ?? 0) * 8L +
+            (PvgVelocities?.LongLength ?? 0) * 12L;
 
         [HideInInspector] public Vector3[] Positions;
         [HideInInspector] public Vector4[] Colors; // RGB, Opacity
@@ -50,6 +58,12 @@ namespace Gsplat
         protected override void _UploadData(GsplatResource resource)
         {
             var res = (GsplatResourceUncompressed)resource;
+            if (RuntimeStorage == GsplatRuntimeStorage.StreamedPlayerData)
+            {
+                UploadStreamed(res, false).GetAwaiter().GetResult();
+                return;
+            }
+
             res.PositionBuffer.SetData(Positions);
             res.ScaleBuffer.SetData(Scales);
             res.RotationBuffer.SetData(Rotations);
@@ -62,6 +76,12 @@ namespace Gsplat
         protected override async Task _UploadDataAsync(GsplatResource resource)
         {
             var res = (GsplatResourceUncompressed)resource;
+            if (RuntimeStorage == GsplatRuntimeStorage.StreamedPlayerData)
+            {
+                await UploadStreamed(res, true);
+                return;
+            }
+
             while (res.UploadedCount < SplatCount)
             {
                 var batchSize = (int)Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount - res.UploadedCount);
@@ -87,6 +107,70 @@ namespace Gsplat
                 res.UploadedCount += (uint)batchSize;
                 await Task.Yield();
             }
+        }
+
+        async Task UploadStreamed(GsplatResourceUncompressed res, bool yieldBetweenBatches)
+        {
+            using var reader = new GsplatStreamData.Reader(this);
+            int coefficientCount = GsplatUtils.SHBandsToCoefficientCount(SHBands);
+            uint requestedBatch = Math.Max(1u, Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount));
+            int maxBatch = int.MaxValue / Math.Max(coefficientCount, 1);
+            int batchCapacity = (int)Math.Min(requestedBatch, (uint)maxBatch);
+            var positions = new Vector3[batchCapacity];
+            var scales = new Vector3[batchCapacity];
+            var rotations = new Vector4[batchCapacity];
+            var colors = new Vector4[batchCapacity];
+            var sh = SHBands > 0 ? new Vector3[batchCapacity * coefficientCount] : null;
+            var pvgTime = IsPvgDynamic ? new Vector2[batchCapacity] : null;
+            var pvgVelocity = IsPvgDynamic ? new Vector3[batchCapacity] : null;
+
+            while (res.UploadedCount < SplatCount)
+            {
+                using (k_streamedUploadBatchMarker.Auto())
+                {
+                    int destination = (int)res.UploadedCount;
+                    int count = (int)Math.Min((uint)batchCapacity, SplatCount - res.UploadedCount);
+                    reader.Read(GsplatStreamSection.Positions, positions, destination, count);
+                    reader.Read(GsplatStreamSection.Scales, scales, destination, count);
+                    reader.Read(GsplatStreamSection.Rotations, rotations, destination, count);
+                    reader.Read(GsplatStreamSection.Colors, colors, destination, count);
+                    res.PositionBuffer.SetData(positions, 0, destination, count);
+                    res.ScaleBuffer.SetData(scales, 0, destination, count);
+                    res.RotationBuffer.SetData(rotations, 0, destination, count);
+                    res.ColorBuffer.SetData(colors, 0, destination, count);
+
+                    if (SHBands > 0)
+                    {
+                        int shDestination = destination * coefficientCount;
+                        int shCount = count * coefficientCount;
+                        reader.Read(GsplatStreamSection.SH, sh, shDestination, shCount);
+                        res.SHBuffer.SetData(sh, 0, shDestination, shCount);
+                    }
+                    if (IsPvgDynamic)
+                    {
+                        reader.Read(GsplatStreamSection.PvgTime, pvgTime, destination, count);
+                        reader.Read(GsplatStreamSection.PvgVelocity, pvgVelocity, destination, count);
+                        res.PvgTimeBuffer.SetData(pvgTime, 0, destination, count);
+                        res.PvgVelocityBuffer.SetData(pvgVelocity, 0, destination, count);
+                    }
+
+                    res.UploadedCount += (uint)count;
+                }
+                if (yieldBetweenBatches)
+                    await Task.Yield();
+            }
+
+            reader.Validate();
+        }
+
+        public override void ReleaseCpuData()
+        {
+            Positions = null;
+            Colors = null;
+            SHs = null;
+            Scales = null;
+            Rotations = null;
+            ReleasePvgCpuData();
         }
 
         public override void SetupMaterialPropertyBlock(MaterialPropertyBlock propertyBlock,

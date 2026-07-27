@@ -51,21 +51,20 @@ namespace Gsplat
                 return;
 
             float delta = (UseUnscaledDeltaTime ? Time.unscaledDeltaTime : Time.deltaTime) * TimeSpeed;
-            foreach (var renderer in GetControlledRenderers())
-            {
-                if (!renderer)
-                    continue;
-                renderer.PvgTime += delta;
-            }
-        }
-
-        GsplatRenderer[] GetControlledRenderers()
-        {
             if (Renderers != null && Renderers.Length > 0)
-                return Renderers;
+            {
+                foreach (var renderer in Renderers)
+                    if (renderer)
+                        renderer.PvgTime += delta;
+                return;
+            }
+
             if (!AutoFindRenderers)
-                return Array.Empty<GsplatRenderer>();
-            return FindObjectsOfType<GsplatRenderer>();
+                return;
+
+            foreach (var renderer in GsplatRuntimeRegistry.Renderers)
+                if (renderer && renderer.isActiveAndEnabled)
+                    renderer.PvgTime += delta;
         }
 
         bool ToggleKeyPressed()

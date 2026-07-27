@@ -77,24 +77,26 @@ float3 ApplyPvgPosition(uint splatId, float3 modelCenter)
     return modelCenter + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
 }
 
-float ApplyPvgOpacity(uint splatId, float opacity)
+float3 ApplyPvgPosition(uint splatId, float3 modelCenter, float2 pvgTimeData)
 {
     if (_PvgDynamic == 0)
-        return opacity;
+        return modelCenter;
 
-    float2 pvgTimeData = _PvgTimeBuffer[splatId];
-    float beta = max(exp(pvgTimeData.y), GSPLAT_EPSILON);
-    float dt = pvgTimeData.x - _PvgTime;
-    return opacity * exp(-0.5 * dt * dt / (beta * beta));
+    float3 velocity = _PvgVelocityBuffer[splatId];
+    float a = PvgAngularFrequency();
+    return modelCenter + velocity * (sin((_PvgTime - pvgTimeData.x) * a) / a);
 }
 
 // Matches Python's temporal marginal used for dynamic-splat prefiltering.
-float PvgMarginal(uint splatId)
+float EvaluatePvgMarginal(uint splatId, out float2 pvgTimeData)
 {
     if (_PvgDynamic == 0)
+    {
+        pvgTimeData = 0.0;
         return 1.0;
+    }
 
-    float2 pvgTimeData = _PvgTimeBuffer[splatId];
+    pvgTimeData = _PvgTimeBuffer[splatId];
     float beta = max(exp(pvgTimeData.y), GSPLAT_EPSILON);
     float dt = pvgTimeData.x - _PvgTime;
     return exp(-0.5 * dt * dt / (beta * beta));

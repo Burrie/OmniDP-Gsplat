@@ -9,10 +9,11 @@ using UnityEngine;
 
 namespace Gsplat.Editor
 {
-    [ScriptedImporter(1, "ply")]
+    [ScriptedImporter(2, "ply")]
     public class GsplatImporter : ScriptedImporter
     {
         public CompressionMode Compression = CompressionMode.Spark;
+        public GsplatRuntimeStorage RuntimeStorage = GsplatRuntimeStorage.EmbeddedManaged;
 
         public override void OnImportAsset(AssetImportContext ctx)
         {
@@ -25,8 +26,17 @@ namespace Gsplat.Editor
 
             try
             {
+                gsplatAsset.RuntimeStorage = RuntimeStorage;
+                gsplatAsset.StreamDataId = AssetDatabase.AssetPathToGUID(ctx.assetPath);
                 gsplatAsset.LoadFromPly(ctx.assetPath, (info, progress) => EditorUtility.DisplayProgressBar(
                     "Importing Gsplat Asset", info, progress));
+
+                if (RuntimeStorage == GsplatRuntimeStorage.StreamedPlayerData)
+                {
+                    GsplatStreamData.Write(gsplatAsset,
+                        GsplatStreamData.GetEditorCachePath(gsplatAsset.StreamDataId));
+                    gsplatAsset.ReleaseCpuData();
+                }
             }
             catch (Exception e)
             {

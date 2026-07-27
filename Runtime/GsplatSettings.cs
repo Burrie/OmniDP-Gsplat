@@ -10,6 +10,12 @@ using UnityEngine;
 
 namespace Gsplat
 {
+    public enum GsplatPlayerGpuResidency
+    {
+        ReleaseAtZeroReferences,
+        PinUntilShutdown,
+    }
+
     public class GsplatSettings : ScriptableObject
     {
         const string k_gsplatSettingsResourcesPath = "GsplatSettings";
@@ -66,6 +72,8 @@ namespace Gsplat
         public ComputeShader ComputeShader;
         public uint SplatInstanceSize = 128;
         public uint UploadBatchSize = 100000;
+        [Tooltip("Pin shared gsplat GPU buffers for the player session. This permits embedded CPU arrays to be released after upload and avoids re-upload hitches when renderers are disabled and enabled.")]
+        public GsplatPlayerGpuResidency PlayerGpuResidency = GsplatPlayerGpuResidency.ReleaseAtZeroReferences;
         [Range(1, 20)] public uint MaxRenderOrder = 1;
         public bool DisplayBoundingBoxes = false;
         [Tooltip("If a camera moves more that this threshold, each GsplatRenderer compute sorting and cutouts regardless of refresh rate")]
@@ -152,6 +160,7 @@ namespace Gsplat
             Version = GsplatUtils.k_Version;
             ComputeShader = DefaultComputeShader;
             Materials = DefaultMaterials;
+            PlayerGpuResidency = GsplatPlayerGpuResidency.ReleaseAtZeroReferences;
             m_prevComputeShader = null;
             m_prevSplatInstanceSize = 0;
             OnValidate();

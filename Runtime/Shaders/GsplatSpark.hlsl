@@ -67,14 +67,17 @@ void UnpackSplat(uint4 packedData, out float4 color, out float3 modelCenter, out
 bool InitSplatData(SplatSource source, float4x4 modelView, out SplatCenter center, out SplatCorner corner,
                    out float4 color)
 {
+    float2 pvgTimeData;
+    float pvgMarginal = EvaluatePvgMarginal(source.id, pvgTimeData);
+    if (pvgMarginal <= 0.05)
+        return false;
+
     uint4 packedSplat = _PackedSplatsBuffer[source.id];
     float3 modelCenter, scale;
     float4 quat;
     UnpackSplat(packedSplat, color, modelCenter, scale, quat);
-    modelCenter = ApplyPvgPosition(source.id, modelCenter);
-    if (_PvgDynamic != 0 && PvgMarginal(source.id) <= 0.05)
-        return false;
-    color.a = ApplyPvgOpacity(source.id, color.a);
+    modelCenter = ApplyPvgPosition(source.id, modelCenter, pvgTimeData);
+    color.a *= pvgMarginal;
     if (!InitCenter(modelView, modelCenter, center))
         return false;
     SplatCovariance cov = CalcCovariance(quat, scale);

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added opt-in streamed desktop player data and pinned GPU residency for large PCVR models.
+
+- Replaced physical vertical ERP padding textures with exact shader-side virtual padding.
+
+- Removed recurring renderer/viewer discovery, camera-array, cutout, and PVG-controller allocations.
+
+- Reused BiRP command buffers and consolidated shared upload state.
+
+- Reduced PVG vertex work by evaluating the temporal marginal once before projection.
+
 - Added an activatable refresh rate slider, running the sorting every Nth frame and the cutouts computation every Nth sort. Force a sort computation when a camera moves or rotates past a customizable threshold. ([#20](https://github.com/wuyize25/gsplat-unity/pull/20) by [@Arthur-Aillet](https://github.com/Arthur-Aillet))
 
 - `GsplatCutout` component to edit the Gaussian Splattings dynamically. A compute shader prepass is done before rendering that creates the order buffer, ignoring splats contained in cutout shapes and removing them from further calculations. ([#19](https://github.com/wuyize25/gsplat-unity/pull/19) by [@Arthur-Aillet](https://github.com/Arthur-Aillet))

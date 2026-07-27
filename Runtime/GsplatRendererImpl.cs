@@ -119,21 +119,22 @@ namespace Gsplat
             SorterResource.Initialized = true;
 
             var cutoutsUnchanged = m_cutoutsData.Length == cutouts.Length;
-            var updatedCutoutsData = new GsplatCutout.ShaderData[cutouts.Length];
+            if (!cutoutsUnchanged)
+                m_cutoutsData = new GsplatCutout.ShaderData[cutouts.Length];
             for (int i = 0; i != cutouts.Length; i++)
             {
-                updatedCutoutsData[i] = cutouts[i].GetShaderData(matrixWorld);
+                var updatedData = cutouts[i].GetShaderData(matrixWorld);
                 if (cutoutsUnchanged)
-                    if (updatedCutoutsData[i].matrix != m_cutoutsData[i].matrix ||
-                        updatedCutoutsData[i].typeAndFlags != m_cutoutsData[i].typeAndFlags)
+                    if (updatedData.matrix != m_cutoutsData[i].matrix ||
+                        updatedData.typeAndFlags != m_cutoutsData[i].typeAndFlags)
                         cutoutsUnchanged = false;
+                m_cutoutsData[i] = updatedData;
             }
 
             if (cutoutsUnchanged && m_prevSplatCount == GsplatResource.UploadedCount)
                 return;
 
             m_prevSplatCount = GsplatResource.UploadedCount;
-            m_cutoutsData = updatedCutoutsData;
             CutoutsBuffer = m_gsplatAsset.UpdateCutoutsBuffer(CutoutsBuffer, m_cutoutsData);
             if (cutoutsUpdateBounds)
                 m_gsplatAsset.UpdateBoundsBuffer(BoundsBuffer);
@@ -202,8 +203,12 @@ namespace Gsplat
 
         public void RefreshOnCameraMove()
         {
-            foreach (var cam in Camera.allCameras)
+            GsplatRuntimeRegistry.GetCameras(out var cameras, out int cameraCount);
+            for (int cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex)
             {
+                var cam = cameras[cameraIndex];
+                if (!cam)
+                    continue;
                 var id = cam.GetInstanceID();
                 if (m_prevCamTransforms.TryGetValue(id, out (Vector3, Vector3) prevCamTransform))
                 {

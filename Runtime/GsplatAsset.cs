@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Unity.Profiling;
 
 namespace Gsplat
 {
@@ -138,6 +139,11 @@ namespace Gsplat
 
     public abstract class GsplatAsset : ScriptableObject
     {
+        static readonly ProfilerMarker k_uploadMarker = new("Gsplat.Upload");
+        static readonly ProfilerMarker k_releaseCpuDataMarker = new("Gsplat.ReleaseCpuData");
+        static readonly ProfilerMarker k_uploadFailureMarker = new("Gsplat.UploadFailure");
+        protected static readonly ProfilerMarker k_streamedUploadBatchMarker =
+            new("Gsplat.StreamedUploadBatch");
         public uint SplatCount;
         public byte SHBands; // 0, 1, 2, or 3
         public Bounds Bounds;
@@ -145,6 +151,8 @@ namespace Gsplat
         [HideInInspector] public float PvgMaxVelocityMagnitude;
         [HideInInspector] public Vector2[] PvgTimeData; // x = tau, y = raw/log beta
         [HideInInspector] public Vector3[] PvgVelocities;
+        [HideInInspector] public GsplatRuntimeStorage RuntimeStorage;
+        [HideInInspector] public string StreamDataId;
         public abstract CompressionMode Compression { get; }
 
         protected int m_kernelInitOrder;
@@ -193,6 +201,12 @@ namespace Gsplat
 
             resource.PvgTimeBuffer.SetData(PvgTimeData);
             resource.PvgVelocityBuffer.SetData(PvgVelocities);
+        }
+
+        protected void ReleasePvgCpuData()
+        {
+            PvgTimeData = null;
+            PvgVelocities = null;
         }
 
         protected static void ValidateImportSize(PlyHeaderInfo plyInfo, byte shBands, CompressionMode compression)
@@ -268,17 +282,73 @@ namespace Gsplat
 
         public void UploadData(GsplatResource resource)
         {
-            if (resource.Uploaded) return;
-            _UploadData(resource);
-            resource.Uploaded = true;
-            resource.UploadedCount = SplatCount;
+            if (resource.UploadState != GsplatUploadState.NotStarted)
+                return;
+
+            resource.UploadState = GsplatUploadState.Uploading;
+            try
+            {
+                using (k_uploadMarker.Auto())
+                    _UploadData(resource);
+                CompleteUpload(resource);
+            }
+            catch (Exception exception)
+            {
+                FailUpload(resource, exception);
+            }
         }
 
         public Task UploadDataAsync(GsplatResource resource)
         {
-            if (resource.Uploaded) return Task.CompletedTask;
-            resource.Uploaded = true;
-            return _UploadDataAsync(resource);
+            if (resource.UploadState != GsplatUploadState.NotStarted)
+                return resource.UploadTask ?? Task.CompletedTask;
+
+            resource.UploadState = GsplatUploadState.Uploading;
+            resource.UploadTask = UploadAndFinalizeAsync(resource);
+            return resource.UploadTask;
+        }
+
+        async Task UploadAndFinalizeAsync(GsplatResource resource)
+        {
+            try
+            {
+                await _UploadDataAsync(resource);
+                CompleteUpload(resource);
+            }
+            catch (Exception exception)
+            {
+                FailUpload(resource, exception);
+            }
+        }
+
+        void CompleteUpload(GsplatResource resource)
+        {
+            resource.UploadedCount = SplatCount;
+            resource.UploadState = GsplatUploadState.Complete;
+            resource.UploadError = null;
+
+#if !UNITY_EDITOR
+            if (Application.isPlaying && GsplatResourceManager.IsPinned(GetInstanceID()))
+            {
+                long releasedBytes = CpuDataBytes;
+                using (k_releaseCpuDataMarker.Auto())
+                    ReleaseCpuData();
+                if (releasedBytes > 0)
+                    Debug.Log(
+                        $"Released {releasedBytes / (1024.0 * 1024.0):F1} MiB of CPU data after uploading '{name}'.",
+                        this);
+            }
+#endif
+        }
+
+        void FailUpload(GsplatResource resource, Exception exception)
+        {
+            using (k_uploadFailureMarker.Auto())
+            {
+                resource.UploadState = GsplatUploadState.Failed;
+                resource.UploadError = exception.Message;
+                Debug.LogError($"Failed to upload gsplat asset '{name}': {exception.Message}", this);
+            }
         }
 
         public GraphicsBuffer UpdateCutoutsBuffer(GraphicsBuffer cutoutsBuffer, GsplatCutout.ShaderData[] cutoutsData)
@@ -314,6 +384,10 @@ namespace Gsplat
         protected abstract Task _UploadDataAsync(GsplatResource resource);
 
         protected abstract void _UploadData(GsplatResource resource);
+
+        public abstract void ReleaseCpuData();
+
+        public abstract long CpuDataBytes { get; }
 
         public abstract void SetupMaterialPropertyBlock(MaterialPropertyBlock propertyBlock, GsplatResource resource);
 

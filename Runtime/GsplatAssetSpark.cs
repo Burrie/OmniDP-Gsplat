@@ -40,6 +40,13 @@ namespace Gsplat
     public class GsplatAssetSpark : GsplatAsset
     {
         public override CompressionMode Compression => CompressionMode.Spark;
+        public override long CpuDataBytes =>
+            (PackedSplats?.LongLength ?? 0) * 16L +
+            (PackedSH1?.LongLength ?? 0) * sizeof(uint) +
+            (PackedSH2?.LongLength ?? 0) * sizeof(uint) +
+            (PackedSH3?.LongLength ?? 0) * sizeof(uint) +
+            (PvgTimeData?.LongLength ?? 0) * 8L +
+            (PvgVelocities?.LongLength ?? 0) * 12L;
 
         [HideInInspector] public uint[] PackedSH1;
         [HideInInspector] public uint[] PackedSH2;
@@ -76,6 +83,12 @@ namespace Gsplat
         protected override void _UploadData(GsplatResource resource)
         {
             var res = (GsplatResourceSpark)resource;
+            if (RuntimeStorage == GsplatRuntimeStorage.StreamedPlayerData)
+            {
+                UploadStreamed(res, false).GetAwaiter().GetResult();
+                return;
+            }
+
             res.PackedSplatsBuffer.SetData(PackedSplats);
             if (SHBands >= 1)
                 res.PackedSH1Buffer.SetData(PackedSH1);
@@ -89,6 +102,12 @@ namespace Gsplat
         protected override async Task _UploadDataAsync(GsplatResource resource)
         {
             var res = (GsplatResourceSpark)resource;
+            if (RuntimeStorage == GsplatRuntimeStorage.StreamedPlayerData)
+            {
+                await UploadStreamed(res, true);
+                return;
+            }
+
             while (res.UploadedCount < SplatCount)
             {
                 var batchSize = (int)Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount - res.UploadedCount);
@@ -114,6 +133,68 @@ namespace Gsplat
                 res.UploadedCount += (uint)batchSize;
                 await Task.Yield();
             }
+        }
+
+        async Task UploadStreamed(GsplatResourceSpark res, bool yieldBetweenBatches)
+        {
+            using var reader = new GsplatStreamData.Reader(this);
+            uint requestedBatch = Math.Max(1u, Math.Min(GsplatSettings.Instance.UploadBatchSize, SplatCount));
+            int batchCapacity = (int)Math.Min(requestedBatch, (uint)(int.MaxValue / 4));
+            var splats = new uint4[batchCapacity];
+            var sh1 = SHBands >= 1 ? new uint[batchCapacity * 2] : null;
+            var sh2 = SHBands >= 2 ? new uint[batchCapacity * 4] : null;
+            var sh3 = SHBands >= 3 ? new uint[batchCapacity * 4] : null;
+            var pvgTime = IsPvgDynamic ? new Vector2[batchCapacity] : null;
+            var pvgVelocity = IsPvgDynamic ? new Vector3[batchCapacity] : null;
+
+            while (res.UploadedCount < SplatCount)
+            {
+                using (k_streamedUploadBatchMarker.Auto())
+                {
+                    int destination = (int)res.UploadedCount;
+                    int count = (int)Math.Min((uint)batchCapacity, SplatCount - res.UploadedCount);
+                    reader.Read(GsplatStreamSection.PackedSplats, splats, destination, count);
+                    res.PackedSplatsBuffer.SetData(splats, 0, destination, count);
+
+                    if (SHBands >= 1)
+                    {
+                        reader.Read(GsplatStreamSection.PackedSH1, sh1, destination * 2, count * 2);
+                        res.PackedSH1Buffer.SetData(sh1, 0, destination * 2, count * 2);
+                    }
+                    if (SHBands >= 2)
+                    {
+                        reader.Read(GsplatStreamSection.PackedSH2, sh2, destination * 4, count * 4);
+                        res.PackedSH2Buffer.SetData(sh2, 0, destination * 4, count * 4);
+                    }
+                    if (SHBands >= 3)
+                    {
+                        reader.Read(GsplatStreamSection.PackedSH3, sh3, destination * 4, count * 4);
+                        res.PackedSH3Buffer.SetData(sh3, 0, destination * 4, count * 4);
+                    }
+                    if (IsPvgDynamic)
+                    {
+                        reader.Read(GsplatStreamSection.PvgTime, pvgTime, destination, count);
+                        reader.Read(GsplatStreamSection.PvgVelocity, pvgVelocity, destination, count);
+                        res.PvgTimeBuffer.SetData(pvgTime, 0, destination, count);
+                        res.PvgVelocityBuffer.SetData(pvgVelocity, 0, destination, count);
+                    }
+
+                    res.UploadedCount += (uint)count;
+                }
+                if (yieldBetweenBatches)
+                    await Task.Yield();
+            }
+
+            reader.Validate();
+        }
+
+        public override void ReleaseCpuData()
+        {
+            PackedSplats = null;
+            PackedSH1 = null;
+            PackedSH2 = null;
+            PackedSH3 = null;
+            ReleasePvgCpuData();
         }
 
         public override void SetupMaterialPropertyBlock(MaterialPropertyBlock propertyBlock,

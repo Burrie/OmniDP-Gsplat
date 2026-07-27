@@ -73,5 +73,15 @@ Sorting also changes only for hybrid mode. `CalcDepth` and `CalcDepthSpark` use 
 
 After the ERP pass, `ERPToPerspective` composites the ERP texture back into the active perspective camera by converting each screen pixel ray into longitude/latitude and sampling the ERP texture. BiRP runs this through `GsplatOmniViewer.OnRenderImage`; URP runs it through an extra `GsplatURPFeature` fullscreen pass before post-processing. Rotation-only camera changes therefore reuse the existing ERP texture and only re-run the fullscreen composite; camera translation invalidates the ERP texture and triggers a new omnidirectional splat pass.
 
+Vertical black padding is virtual. The viewer keeps only the native `ARGBHalf` ERP target and supplies the logical display height and content-row offset to `ERPToPerspective`. Its manual bilinear sampler wraps horizontally, samples the native texture inside the content rows, and returns opaque black for taps in the top and bottom padding. A `1920x512` ERP with 224 rows on each side therefore behaves like a `1920x960` padded texture without allocating or copying that second target.
+
+## Player Memory
+
+The PLY importer supports embedded and streamed runtime storage. Streamed assets are serialized into GPU-ready sections under `Library/GsplatStreamData`; desktop build preprocessing adds those blobs to `StreamingAssets/Gsplat`. Runtime upload reads one configured batch at a time and validates each section while uploading, so temporary CPU memory is bounded by `GsplatSettings.UploadBatchSize`.
+
+GPU resources have a shared upload state (`NotStarted`, `Uploading`, `Complete`, or `Failed`) so multiple renderers cannot start duplicate uploads. With `Player GPU Residency = Pin Until Shutdown`, shared GPU buffers remain cached when the last renderer is disabled. In non-Editor players, embedded CPU arrays are released only after all required buffers finish uploading successfully.
+
+The BiRP viewer reuses its ERP and overlay command buffers. Runtime registries replace recurring scene searches, camera snapshots are shared once per frame, and cutout/PVG target buffers are reused to avoid steady-frame managed allocations.
+
 The v1 hybrid compositor is an image layer over the camera color buffer. Exact depth interaction with arbitrary Unity scene geometry is intentionally deferred.
 

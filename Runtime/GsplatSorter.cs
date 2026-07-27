@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Unity.Profiling;
 
 namespace Gsplat
 {
@@ -35,6 +35,7 @@ namespace Gsplat
     // https://github.com/aras-p/UnityGaussianSplatting/blob/main/package/Runtime/GaussianSplatRenderer.cs
     public class GsplatSorter
     {
+        static readonly ProfilerMarker k_sortMarker = new("Gsplat.Sort");
         class Resource : ISorterResource
         {
             public GraphicsBuffer OrderBuffer { get; }
@@ -95,8 +96,9 @@ namespace Gsplat
             if (m_camerasInjected != null)
             {
                 if (m_commandBuffer != null)
-                    foreach (var cam in m_camerasInjected.Where(cam => cam))
-                        cam.RemoveCommandBuffer(CameraEvent.BeforeForwardAlpha, m_commandBuffer);
+                    foreach (var cam in m_camerasInjected)
+                        if (cam)
+                            cam.RemoveCommandBuffer(CameraEvent.BeforeForwardAlpha, m_commandBuffer);
                 m_camerasInjected.Clear();
             }
 
@@ -113,9 +115,9 @@ namespace Gsplat
                 return false;
 
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs =>
-                         gs is { isActiveAndEnabled: true, Valid: true } && gs.RenderMode == renderMode))
-                m_activeGsplats.Add(gs);
+            foreach (var gs in m_gsplats)
+                if (gs is { isActiveAndEnabled: true, Valid: true } && gs.RenderMode == renderMode)
+                    m_activeGsplats.Add(gs);
             return m_activeGsplats.Count != 0;
         }
 
@@ -151,6 +153,7 @@ namespace Gsplat
         public void DispatchSort(CommandBuffer cmd, IGsplat gs, Matrix4x4 matrixMv,
             GsplatRenderer.GsplatRenderMode renderMode)
         {
+            using var profilerScope = k_sortMarker.Auto();
             var res = (Resource)gs.SorterResource;
 
             if (!gs.ComputeSortRequired || gs.RemainingCount <= 0)
