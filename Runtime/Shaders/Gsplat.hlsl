@@ -120,7 +120,9 @@ bool InitCenter(float4x4 modelView, float3 modelCenter, out SplatCenter center)
         }
 
         float distXZ = max(length(center.omniView.xz), GSPLAT_EPSILON);
-        center.lat = atan2(-center.omniView.y, distXZ);
+        // center.omniView is Unity camera-local (+Y up). The source CUDA rasterizer receives OpenCV camera-local
+        // coordinates (+Y down), so this is atan2(-p_cv.y, length(p_cv.xz)) after the required Y conversion.
+        center.lat = atan2(center.omniView.y, distXZ);
         center.lon = atan2(center.omniView.x, center.omniView.z);
 
         float2 uv = float2(center.lon / (2.0 * UNITY_PI) + 0.5 + _GsplatOmniWrapOffset,
@@ -271,9 +273,11 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
 
             float dpxdx = wDiv2Pi * p.z * invXZ2;
             float dpxdz = -wDiv2Pi * p.x * invXZ2;
-            float dpydx = -hDivPi * p.x * p.y * invXZ * invR2;
-            float dpydy = hDivPi * xz * invR2;
-            float dpydz = -hDivPi * p.z * p.y * invXZ * invR2;
+            // p is Unity camera-local (+Y up), while OmniGS derives its Jacobian in OpenCV (+Y down).
+            // This is the exact CUDA Jacobian after p_cv = (p.x, -p.y, p.z).
+            float dpydx = hDivPi * p.x * p.y * invXZ * invR2;
+            float dpydy = -hDivPi * xz * invR2;
+            float dpydz = hDivPi * p.z * p.y * invXZ * invR2;
 
             float3x3 J = float3x3(
                 dpxdx, dpydx, 0.0,
@@ -300,8 +304,8 @@ bool InitCorner(SplatSource source, SplatCovariance covariance, SplatCenter cent
 
         float3x3 sphericalFrame = float3x3(
             cosLon, 0.0, -sinLon,
-            sinLat * sinLon, cosLat, sinLat * cosLon,
-            cosLat * sinLon, -sinLat, cosLat * cosLon
+            sinLat * sinLon, -cosLat, sinLat * cosLon,
+            cosLat * sinLon, sinLat, cosLat * cosLon
         );
 
         float3x3 jo = mul(mul(W, sphericalFrame), sqj);

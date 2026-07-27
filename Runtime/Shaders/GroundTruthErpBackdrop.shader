@@ -79,8 +79,9 @@ Shader "Hidden/Gsplat/Ground Truth ERP Backdrop"
                 float3 direction = normalize(input.localDirection);
                 float distXZ = max(length(direction.xz), 0.0000001);
                 float longitude = atan2(direction.x, direction.z);
-                // This deliberately matches the ERP convention used by Gsplat/ERPToPerspective.
-                float latitude = atan2(-direction.y, distXZ);
+                // direction is Unity camera-local (+Y up). This deliberately matches the OpenMVG/CUDA ERP
+                // convention after its required Y-axis conversion, and must match Gsplat/ERPToPerspective.
+                float latitude = atan2(direction.y, distXZ);
                 float2 uv = float2(
                     longitude / (2.0 * UNITY_PI) + 0.5 + _LongitudeOffsetDegrees / 360.0,
                     0.5 - latitude / UNITY_PI);

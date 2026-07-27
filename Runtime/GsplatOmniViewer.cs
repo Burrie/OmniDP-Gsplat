@@ -32,6 +32,8 @@ namespace Gsplat
         public OmniRasterizer Rasterizer = OmniRasterizer.ODGS;
         [Tooltip("Camera translation needed before the hidden ERP is re-rendered. Keep this at 0 for natural HCI/VR movement; increase only when profiling requires it.")]
         [Min(0.0f)] public float PositionRefreshThreshold = 0.0f;
+        [Tooltip("Use the selected OpenMVG training-pose orientation as the stable ERP reference. GsplatTrainingPoseViewer enables this when it applies a pose, so Debug ERP uses the same camera-relative orientation as the source training frame without locking the tracked VR head rotation.")]
+        public bool UseTrainingPoseReference;
         public ErpUpdatePolicy UpdatePolicy = ErpUpdatePolicy.OnPositionChange;
         public Color BackgroundColor = Color.clear;
         public bool AutoFindRenderers = true;
@@ -62,9 +64,31 @@ namespace Gsplat
         int m_srpFramesWaitingForFeature;
         int m_lastSrpFeatureFrame = -1;
         Matrix4x4 m_omniWorldToCamera;
+        [SerializeField] Quaternion m_trainingReferenceRotation = Quaternion.identity;
 
         public RenderTexture ErpTexture => m_erpTexture;
         public bool HasRenderedErp => m_hasRendered;
+        public Quaternion TrainingReferenceRotation => m_trainingReferenceRotation;
+
+        /// <summary>
+        /// Makes the hidden ERP camera-relative to a training pose while continuing to use this component's live
+        /// position. The reference remains stable while an XR user's head turns, so the ERP does not need a costly
+        /// re-render for every head rotation.
+        /// </summary>
+        public void SetTrainingPoseReference(Quaternion rotation)
+        {
+            UseTrainingPoseReference = true;
+            m_trainingReferenceRotation = rotation;
+            ForceRender();
+        }
+
+        /// <summary>Returns to the legacy world-aligned ERP reference.</summary>
+        public void ClearTrainingPoseReference()
+        {
+            UseTrainingPoseReference = false;
+            m_trainingReferenceRotation = Quaternion.identity;
+            ForceRender();
+        }
 
         public static bool TryGetActiveViewer(Camera camera, out GsplatOmniViewer viewer)
         {
@@ -248,7 +272,9 @@ namespace Gsplat
             }
 
             m_warnedNoHybridRenderers = false;
-            m_omniWorldToCamera = WorldAlignedCameraMatrix(transform.position);
+            m_omniWorldToCamera = UseTrainingPoseReference
+                ? ReferenceCameraMatrix(transform.position, m_trainingReferenceRotation)
+                : WorldAlignedCameraMatrix(transform.position);
 
             cmd.SetRenderTarget(m_erpTexture);
             cmd.SetViewport(new Rect(0, 0, ErpWidth, ErpHeight));
@@ -345,6 +371,14 @@ namespace Gsplat
         {
             return Matrix4x4.Scale(new Vector3(1.0f, 1.0f, -1.0f)) *
                    Matrix4x4.Translate(-position);
+        }
+
+        // Unity's camera-local Y is up whereas the OpenMVG/CUDA camera convention used by the training rasterizer
+        // has Y down. The shaders convert that local Y component explicitly when they map an ERP latitude.
+        static Matrix4x4 ReferenceCameraMatrix(Vector3 position, Quaternion rotation)
+        {
+            return Matrix4x4.Scale(new Vector3(1.0f, 1.0f, -1.0f)) *
+                   Matrix4x4.TRS(position, rotation, Vector3.one).inverse;
         }
 
         public bool TryPrepareCompositeMaterial(Camera targetCamera, out Material material)

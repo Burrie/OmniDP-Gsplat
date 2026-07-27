@@ -63,6 +63,12 @@ namespace Gsplat
         [Tooltip("Load and display the selected pose's ground-truth ERP frame when a pose is applied.")]
         public bool ApplyGroundTruthFrame = true;
 
+        [Header("Gsplat ERP reference")]
+        [Tooltip("Make Gsplat's hidden ERP camera-relative to the selected OpenMVG training pose. This aligns Show Debug ERP with the source frame while preserving natural tracked-head rotation in VR.")]
+        public bool ApplyTrainingReferenceToOmniViewer = true;
+        [Tooltip("Gsplat Omni Viewer that renders the selected training-pose ERP. When empty, the component on TargetCamera is used.")]
+        public GsplatOmniViewer TargetOmniViewer;
+
         [SerializeField] TrainingPoseInfo[] m_poses = Array.Empty<TrainingPoseInfo>();
         [SerializeField] string m_status = "No poses loaded.";
         [SerializeField] bool m_loadedSuccessfully;
@@ -117,6 +123,7 @@ namespace Gsplat
             EnsureTargetCamera();
             EnsureTargetRenderer();
             EnsureGroundTruthFrameDisplayer();
+            EnsureTargetOmniViewer();
         }
 
         void OnValidate()
@@ -266,13 +273,17 @@ namespace Gsplat
                 TargetCamera.fieldOfView = pose.VerticalFovDegrees;
 
             string pvgStatus = ApplyPvgTimestamp(pose);
-            string frameStatus = ApplyGroundTruthTrainingFrame(pose, cameraTransform.position, cameraTransform.rotation);
+            string omniStatus = ApplyOmniTrainingReference(rotation);
+            // Use the selected OpenMVG orientation, not the live tracked-head orientation. ApplyRotation may be
+            // deliberately disabled in VR, but the source ERP and the hidden GSplat ERP must retain their training
+            // camera reference frame to remain comparable.
+            string frameStatus = ApplyGroundTruthTrainingFrame(pose, cameraTransform.position, rotation);
             string motionStatus = teleportedLocomotionRoot
                 ? $"Teleported {LocomotionRoot.name}"
                 : "Applied legacy camera pose";
             string coordinateStatus = coordinateRoot ? $" using {coordinateRoot.name}" : string.Empty;
 
-            m_status = $"{motionStatus}{coordinateStatus}: {GetPoseLabel(SelectedPoseIndex)}{pvgStatus}{frameStatus}.";
+            m_status = $"{motionStatus}{coordinateStatus}: {GetPoseLabel(SelectedPoseIndex)}{pvgStatus}{omniStatus}{frameStatus}.";
             return true;
         }
 
@@ -349,6 +360,19 @@ namespace Gsplat
             if (GroundTruthFrameDisplayer.ApplyTrainingFrame(pose.Filename, cameraPosition, cameraRotation))
                 return $" (ground truth {pose.Filename})";
             return $" (ground truth unavailable: {GroundTruthFrameDisplayer.Status})";
+        }
+
+        string ApplyOmniTrainingReference(Quaternion trainingPoseRotation)
+        {
+            if (!ApplyTrainingReferenceToOmniViewer)
+                return string.Empty;
+
+            EnsureTargetOmniViewer();
+            if (!TargetOmniViewer)
+                return " (Gsplat Omni Viewer not assigned)";
+
+            TargetOmniViewer.SetTrainingPoseReference(trainingPoseRotation);
+            return " (ERP aligned to training pose)";
         }
 
         string ApplyPvgTimestamp(TrainingPoseInfo pose)
@@ -447,6 +471,12 @@ namespace Gsplat
         {
             if (!GroundTruthFrameDisplayer)
                 GroundTruthFrameDisplayer = GetComponent<GsplatGroundTruthFrameDisplayer>();
+        }
+
+        void EnsureTargetOmniViewer()
+        {
+            if (!TargetOmniViewer && TargetCamera)
+                TargetOmniViewer = TargetCamera.GetComponent<GsplatOmniViewer>();
         }
 
         static string ResolvePath(string path)
