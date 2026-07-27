@@ -36,6 +36,11 @@ namespace Gsplat
         [Range(0, 3)] public int SHDegree = 3;
         [HideInInspector] public uint RenderOrder = 0;
         public float Brightness = 1.0f;
+        [Tooltip("Global multiplier for each Gaussian's stored alpha. 1 preserves the PLY opacity, while 0 makes all Gaussian points fully transparent.")]
+        [Range(0.0f, 1.0f)] public float Opacity = 1.0f;
+        // Existing scenes predate Opacity. Unity can deserialize a missing numeric field as zero,
+        // so migrate those components to the non-destructive default exactly once.
+        [SerializeField, HideInInspector] int m_opacitySerializationVersion;
 
         [Tooltip(
             "Improves rendering speed by shrinking Gaussian splats while trying to keep the impact on visual quality as small as possible.")]
@@ -126,6 +131,7 @@ namespace Gsplat
 
         void OnEnable()
         {
+            EnsureOpacityInitialized();
             GsplatSorter.Instance.RegisterGsplat(this);
             m_prevAsset = null;
         }
@@ -159,7 +165,9 @@ namespace Gsplat
 
         void OnValidate()
         {
+            EnsureOpacityInitialized();
             PvgPeriod = Mathf.Max(k_MinPvgPeriod, PvgPeriod);
+            Opacity = Mathf.Clamp01(Opacity);
             ForceRefresh();
 #if UNITY_EDITOR
             long localId;
@@ -167,6 +175,17 @@ namespace Gsplat
                 AssetDatabase.TryGetGUIDAndLocalFileIdentifier(GsplatAsset, out var guid, out localId))
                 m_assetGuid = guid;
 #endif // #if UNITY_EDITOR
+        }
+
+        void EnsureOpacityInitialized()
+        {
+            if (m_opacitySerializationVersion != 0)
+                return;
+
+            // Version zero means the component was serialized before the opacity field existed.
+            // Preserve the historical visual result instead of treating it as fully transparent.
+            Opacity = 1.0f;
+            m_opacitySerializationVersion = 1;
         }
 
         public void ReloadAsset()
@@ -248,7 +267,7 @@ namespace Gsplat
         public void RenderPerspective()
         {
             m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
-                1.0f - SplatDownscaleFactor, RenderOrder, PvgTime, CurrentPvgPeriod);
+                1.0f - SplatDownscaleFactor, RenderOrder, PvgTime, CurrentPvgPeriod, Opacity);
         }
 
         public void RenderOmni(CommandBuffer cmd, float nearDistance, int targetWidth, int targetHeight,
@@ -256,7 +275,7 @@ namespace Gsplat
         {
             m_renderer.RenderOmni(cmd, transform, GammaToLinear, SHDegree, Brightness,
                 1.0f - SplatDownscaleFactor, RenderOrder, nearDistance, targetWidth, targetHeight,
-                PvgTime, CurrentPvgPeriod, rasterizer);
+                PvgTime, CurrentPvgPeriod, rasterizer, Opacity);
         }
 
         public void Update()

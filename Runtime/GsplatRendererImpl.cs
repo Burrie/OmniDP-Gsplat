@@ -33,6 +33,7 @@ namespace Gsplat
         static readonly int k_gammaToLinear = Shader.PropertyToID("_GammaToLinear");
         static readonly int k_shDegree = Shader.PropertyToID("_SHDegree");
         static readonly int k_brightness = Shader.PropertyToID("_Brightness");
+        static readonly int k_opacity = Shader.PropertyToID("_Opacity");
         static readonly int k_scaleFactor = Shader.PropertyToID("_ScaleFactor");
         static readonly int k_gsplatProjectionMode = Shader.PropertyToID("_GsplatProjectionMode");
         static readonly int k_gsplatOmniRasterizer = Shader.PropertyToID("_GsplatOmniRasterizer");
@@ -271,16 +272,17 @@ namespace Gsplat
         /// <param name="gammaToLinear">Covert color space from Gamma to Linear.</param>
         /// <param name="shDegree">Order of SH coefficients used for rendering. The final value is capped by the SHBands property.</param>
         /// <param name="brightness">Brightness color scaling.</param>
+        /// <param name="opacity">Global multiplier for the stored per-splat alpha.</param>
         /// <param name="scaleFactor">Splats uv scaling factor, reduce splat size while trying to keep visual fidelity.</param>
         /// <param name="renderOrder">Manual render order placement of the gsplat. The final value is capped by the maximum render order setting.</param>
         public void Render(Transform transform, int layer, bool gammaToLinear = false, int shDegree = 3,
             float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float pvgTime = 0.0f,
-            float pvgPeriod = 1.0f)
+            float pvgPeriod = 1.0f, float opacity = 1.0f)
         {
             if (m_remainingCount <= 0)
                 return;
 
-            SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
+            SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, opacity, scaleFactor,
                 GsplatRenderer.GsplatRenderMode.Perspective, 0.2f, Screen.width, Screen.height, 0.0f,
                 pvgTime, pvgPeriod);
 
@@ -299,7 +301,8 @@ namespace Gsplat
         public void RenderOmni(CommandBuffer cmd, Transform transform, bool gammaToLinear = false, int shDegree = 3,
             float brightness = 1.0f, float scaleFactor = 1.0f, uint renderOrder = 0, float nearDistance = 0.2f,
             int targetWidth = 2048, int targetHeight = 1024, float pvgTime = 0.0f, float pvgPeriod = 1.0f,
-            GsplatOmniViewer.OmniRasterizer rasterizer = GsplatOmniViewer.OmniRasterizer.ODGS)
+            GsplatOmniViewer.OmniRasterizer rasterizer = GsplatOmniViewer.OmniRasterizer.ODGS,
+            float opacity = 1.0f)
         {
             if (m_remainingCount <= 0)
                 return;
@@ -311,7 +314,7 @@ namespace Gsplat
             // Draw three horizontally wrapped copies so splats crossing the ERP seam remain continuous.
             for (int wrapOffset = -1; wrapOffset <= 1; ++wrapOffset)
             {
-                SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, scaleFactor,
+                SetupDrawProperties(transform, gammaToLinear, shDegree, brightness, opacity, scaleFactor,
                     GsplatRenderer.GsplatRenderMode.HybridOmniPerspective, nearDistance, targetWidth, targetHeight,
                     wrapOffset, pvgTime, pvgPeriod, rasterizer);
                 cmd.DrawMeshInstancedProcedural(GsplatSettings.Instance.Mesh, 0, material, k_omniErpPass, instanceCount,
@@ -320,7 +323,7 @@ namespace Gsplat
         }
 
         void SetupDrawProperties(Transform transform, bool gammaToLinear, int shDegree, float brightness,
-            float scaleFactor, GsplatRenderer.GsplatRenderMode renderMode, float nearDistance, int targetWidth,
+            float opacity, float scaleFactor, GsplatRenderer.GsplatRenderMode renderMode, float nearDistance, int targetWidth,
             int targetHeight, float wrapOffset, float pvgTime, float pvgPeriod,
             GsplatOmniViewer.OmniRasterizer rasterizer = GsplatOmniViewer.OmniRasterizer.ODGS)
         {
@@ -331,6 +334,7 @@ namespace Gsplat
             m_propertyBlock.SetInteger(k_gsplatProjectionMode, (int)renderMode);
             m_propertyBlock.SetInteger(k_gsplatOmniRasterizer, (int)rasterizer);
             m_propertyBlock.SetFloat(k_brightness, brightness);
+            m_propertyBlock.SetFloat(k_opacity, Mathf.Clamp01(opacity));
             m_propertyBlock.SetFloat(k_scaleFactor, scaleFactor);
             m_propertyBlock.SetFloat(k_gsplatOmniNearDistance, nearDistance);
             m_propertyBlock.SetFloat(k_gsplatOmniWrapOffset, wrapOffset);

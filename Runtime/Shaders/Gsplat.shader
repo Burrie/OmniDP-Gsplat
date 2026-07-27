@@ -42,6 +42,7 @@ Shader "Gsplat/Standard"
             int _SHDegree;
             float4x4 _MATRIX_M;
             float _Brightness;
+            float _Opacity;
             float _ScaleFactor;
             StructuredBuffer<uint> _OrderBuffer;
 
@@ -120,7 +121,7 @@ Shader "Gsplat/Standard"
                 float A = dot(i.uv, i.uv);
                 if (A > 1.0) discard;
 
-                float alpha = exp(-A * 4.0) * i.color.a;
+                float alpha = exp(-A * 4.0) * i.color.a * _Opacity;
                 if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
                     alpha = min(0.99, alpha);
 
@@ -165,6 +166,7 @@ Shader "Gsplat/Standard"
             int _SHDegree;
             float4x4 _MATRIX_M;
             float _Brightness;
+            float _Opacity;
             float _ScaleFactor;
             StructuredBuffer<uint> _OrderBuffer;
 
@@ -242,7 +244,7 @@ Shader "Gsplat/Standard"
                 float A = dot(i.uv, i.uv);
                 if (A > 1.0) discard;
 
-                float alpha = exp(-A * 4.0) * i.color.a;
+                float alpha = exp(-A * 4.0) * i.color.a * _Opacity;
                 if (_GsplatProjectionMode == GSPLAT_PROJECTION_HYBRID_OMNI)
                     alpha = min(0.99, alpha);
 
