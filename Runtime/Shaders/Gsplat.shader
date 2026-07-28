@@ -25,6 +25,7 @@ Shader "Gsplat/Standard"
             #pragma require compute
             #pragma multi_compile SH_BANDS_0 SH_BANDS_1 SH_BANDS_2 SH_BANDS_3
             #pragma multi_compile UNCOMPRESSED SPARK
+            #pragma multi_compile_instancing
 
             #include "UnityCG.cginc"
             #include "Gsplat.hlsl"
@@ -52,7 +53,7 @@ Shader "Gsplat/Standard"
                 #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED) && !defined(UNITY_STEREO_INSTANCING_ENABLED)
                 uint instanceID : SV_InstanceID;
                 #endif
-                UNITY_VERTEX_INPUT_INSTANCE_ID
+                UNITY_VERTEX_INPUT_INSTANCE_ID // Perspective SPI eye/instance routing.
             };
 
             bool InitSource(appdata v, out SplatSource source)
@@ -76,13 +77,13 @@ Shader "Gsplat/Standard"
                 float2 uv : TEXCOORD0;
                 float4 vertex : SV_POSITION;
                 float4 color: COLOR;
-                UNITY_VERTEX_OUTPUT_STEREO
+                UNITY_VERTEX_OUTPUT_STEREO // Perspective SPI render-target slice.
             };
 
             v2f vert(appdata v)
             {
                 v2f o;
-                UNITY_SETUP_INSTANCE_ID(v);
+                UNITY_SETUP_INSTANCE_ID(v); // Perspective SPI.
                 UNITY_INITIALIZE_OUTPUT(v2f, o);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.vertex = discardVec;
@@ -173,19 +174,12 @@ Shader "Gsplat/Standard"
             struct appdata
             {
                 float4 vertex : POSITION;
-                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED) && !defined(UNITY_STEREO_INSTANCING_ENABLED)
                 uint instanceID : SV_InstanceID;
-                #endif
-                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             bool InitSource(appdata v, out SplatSource source)
             {
-                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED) && !defined(UNITY_STEREO_INSTANCING_ENABLED)
                 source.order = v.instanceID * _SplatInstanceSize + asuint(v.vertex.z);
-                #else
-                source.order = unity_InstanceID * _SplatInstanceSize + asuint(v.vertex.z);
-                #endif
 
                 if (source.order >= _SplatCount)
                     return false;
@@ -200,15 +194,12 @@ Shader "Gsplat/Standard"
                 float2 uv : TEXCOORD0;
                 float4 vertex : SV_POSITION;
                 float4 color: COLOR;
-                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             v2f vert(appdata v)
             {
                 v2f o;
-                UNITY_SETUP_INSTANCE_ID(v);
                 UNITY_INITIALIZE_OUTPUT(v2f, o);
-                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.vertex = discardVec;
 
                 SplatSource source;

@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Unity.Profiling;
+using UnityEngine.XR;
 
 namespace Gsplat
 {
@@ -53,23 +54,27 @@ namespace Gsplat
         public bool ShowDebugErp;
 
         static readonly int k_omniTex = Shader.PropertyToID("_GsplatOmniTex");
+        static readonly int k_omniTexRight = Shader.PropertyToID("_GsplatOmniTexRight");
         static readonly int k_omniTexTexelSize = Shader.PropertyToID("_GsplatOmniTex_TexelSize");
         static readonly int k_omniDisplayData = Shader.PropertyToID("_GsplatOmniDisplayData");
         static readonly int k_blitTexture = Shader.PropertyToID("_BlitTexture");
-        static readonly int k_cameraForward = Shader.PropertyToID("_GsplatCompositeCameraForward");
-        static readonly int k_cameraRight = Shader.PropertyToID("_GsplatCompositeCameraRight");
-        static readonly int k_cameraUp = Shader.PropertyToID("_GsplatCompositeCameraUp");
+        static readonly int k_stereoEnabled = Shader.PropertyToID("_GsplatCompositeStereoEnabled");
+        static readonly int k_cameraToWorld = Shader.PropertyToID("_GsplatCompositeCameraToWorld");
         static readonly int k_cameraProjectionData = Shader.PropertyToID("_GsplatCompositeProjectionData");
         static readonly int k_omniWorldToCamera = Shader.PropertyToID("_GsplatOmniWorldToCamera");
 
         RenderTexture m_erpTexture;
+        RenderTexture m_rightErpTexture;
         Material m_compositeMaterial;
         Camera m_camera;
         CommandBuffer m_erpCommandBuffer;
         CommandBuffer m_builtinCompositeCommandBuffer;
         bool m_builtinCompositeAttached;
         bool m_builtinCompositeRecorded;
+        bool m_builtinCompositeRecordedStereo;
         Vector3 m_lastRenderPosition;
+        Vector3 m_lastRightRenderPosition;
+        bool m_lastRenderWasSingleCameraStereo;
         int m_lastRendererSignature;
         OmniRasterizer m_lastRasterizer;
         bool m_hasRendered;
@@ -87,11 +92,17 @@ namespace Gsplat
         OmniRasterizer m_validatedRasterizer;
         Color m_validatedBackgroundColor;
         Matrix4x4 m_omniWorldToCamera;
+        Matrix4x4 m_rightOmniWorldToCamera;
+        readonly Matrix4x4[] m_compositeCameraToWorld = new Matrix4x4[2];
+        readonly Matrix4x4[] m_compositeOmniWorldToCamera = new Matrix4x4[2];
+        readonly Vector4[] m_compositeProjectionData = new Vector4[2];
         readonly List<GsplatRenderer> m_rendererScratch = new();
         [SerializeField] Quaternion m_trainingReferenceRotation = Quaternion.identity;
 
         /// <summary>The native ERP produced directly by the OmniGS/ODGS rasterizer.</summary>
         public RenderTexture ErpTexture => m_erpTexture;
+        /// <summary>The right-eye native ERP when a single XR camera renders both eyes.</summary>
+        public RenderTexture RightErpTexture => m_rightErpTexture;
         /// <summary>
         /// Compatibility alias for the physical ERP texture. Vertical padding is now applied virtually by the
         /// composite shader, so this texture always has the native ERP dimensions.
@@ -228,8 +239,11 @@ namespace Gsplat
         public bool ShouldRenderErp()
         {
             if (UpdatePolicy == ErpUpdatePolicy.Manual)
-                return !m_hasRendered || RasterizerChanged() || RendererSignatureChanged();
+                return !m_hasRendered || StereoConfigurationChanged() || RasterizerChanged() ||
+                       RendererSignatureChanged();
             if (UpdatePolicy == ErpUpdatePolicy.Always || !m_hasRendered)
+                return true;
+            if (StereoConfigurationChanged())
                 return true;
             if (RasterizerChanged())
                 return true;
@@ -237,7 +251,16 @@ namespace Gsplat
                 return true;
 
             float threshold = PositionRefreshThreshold;
-            return (transform.position - m_lastRenderPosition).sqrMagnitude > threshold * threshold;
+            GetErpEyePositions(out var leftPosition, out var rightPosition, out var singleCameraStereo);
+            if ((leftPosition - m_lastRenderPosition).sqrMagnitude > threshold * threshold)
+                return true;
+            return singleCameraStereo &&
+                   (rightPosition - m_lastRightRenderPosition).sqrMagnitude > threshold * threshold;
+        }
+
+        bool StereoConfigurationChanged()
+        {
+            return m_hasRendered && m_lastRenderWasSingleCameraStereo != IsSingleCameraStereoActive();
         }
 
         void EnsureCompositeMaterial()
@@ -245,12 +268,35 @@ namespace Gsplat
             if (m_compositeMaterial)
                 return;
 
+            // Loading a Resources material creates an explicit build dependency on the composite shader.
+            // Shader.Find alone is insufficient in a player build because Unity can strip shaders that are
+            // only discovered dynamically at runtime.
+            var template = Resources.Load<Material>("GsplatERPToPerspective");
+            if (template)
+            {
+                m_compositeMaterial = new Material(template)
+                {
+                    name = "Gsplat ERP To Perspective (Runtime)",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
+                return;
+            }
+
             var shader = Shader.Find("Gsplat/ERPToPerspective");
             if (shader)
-                m_compositeMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            {
+                m_compositeMaterial = new Material(shader)
+                {
+                    name = "Gsplat ERP To Perspective (Runtime Fallback)",
+                    hideFlags = HideFlags.HideAndDontSave,
+                    enableInstancing = true,
+                };
+            }
             else if (!m_warnedMissingCompositeShader)
             {
-                Debug.LogWarning("Gsplat Omni Viewer could not find shader 'Gsplat/ERPToPerspective'. Hybrid output cannot be composited.", this);
+                Debug.LogWarning(
+                    "Gsplat Omni Viewer could not load Resources/GsplatERPToPerspective or find shader " +
+                    "'Gsplat/ERPToPerspective'. Hybrid output cannot be composited.", this);
                 m_warnedMissingCompositeShader = true;
             }
         }
@@ -262,6 +308,22 @@ namespace Gsplat
                 ReleaseErpTexture();
                 m_erpTexture = CreateErpTexture(ErpWidth, ErpHeight, "Gsplat Hybrid Omni ERP");
                 ForceRender();
+            }
+
+            if (IsSingleCameraStereoActive())
+            {
+                if (!m_rightErpTexture || m_rightErpTexture.width != ErpWidth ||
+                    m_rightErpTexture.height != ErpHeight)
+                {
+                    ReleaseTexture(ref m_rightErpTexture);
+                    m_rightErpTexture = CreateErpTexture(ErpWidth, ErpHeight,
+                        "Gsplat Hybrid Omni ERP (Right Eye)");
+                    ForceRender();
+                }
+            }
+            else
+            {
+                ReleaseTexture(ref m_rightErpTexture);
             }
         }
 
@@ -301,14 +363,16 @@ namespace Gsplat
                 return;
             }
 
-            if (!m_builtinCompositeRecorded)
+            bool singleCameraStereo = IsSingleCameraStereoActive();
+            if (!m_builtinCompositeRecorded || m_builtinCompositeRecordedStereo != singleCameraStereo)
             {
                 m_builtinCompositeCommandBuffer.Clear();
                 // Pass 2 is a premultiplied-alpha overlay. It preserves the eye camera's already-rendered scene
                 // while avoiding OnRenderImage, which can be skipped by the Oculus per-eye presentation path.
                 m_builtinCompositeCommandBuffer.DrawProcedural(Matrix4x4.identity, material, 2,
-                    MeshTopology.Triangles, 3, 1);
+                    MeshTopology.Triangles, 3, singleCameraStereo ? 2 : 1);
                 m_builtinCompositeRecorded = true;
+                m_builtinCompositeRecordedStereo = singleCameraStereo;
             }
         }
 
@@ -318,6 +382,7 @@ namespace Gsplat
                 m_camera.RemoveCommandBuffer(CameraEvent.AfterEverything, m_builtinCompositeCommandBuffer);
             m_builtinCompositeAttached = false;
             m_builtinCompositeRecorded = false;
+            m_builtinCompositeRecordedStereo = false;
             if (m_builtinCompositeCommandBuffer == null)
                 return;
             m_builtinCompositeCommandBuffer.Release();
@@ -327,6 +392,7 @@ namespace Gsplat
         void ReleaseErpTexture()
         {
             ReleaseTexture(ref m_erpTexture);
+            ReleaseTexture(ref m_rightErpTexture);
         }
 
         static RenderTexture CreateErpTexture(int width, int height, string name)
@@ -397,39 +463,53 @@ namespace Gsplat
             }
 
             m_warnedNoHybridRenderers = false;
-            m_omniWorldToCamera = UseTrainingPoseReference
-                ? ReferenceCameraMatrix(transform.position, m_trainingReferenceRotation)
-                : WorldAlignedCameraMatrix(transform.position);
+            GetErpEyePositions(out var leftPosition, out var rightPosition, out var singleCameraStereo);
+            m_omniWorldToCamera = BuildErpViewMatrix(leftPosition);
+            m_rightOmniWorldToCamera = singleCameraStereo
+                ? BuildErpViewMatrix(rightPosition)
+                : m_omniWorldToCamera;
 
-            cmd.SetRenderTarget(m_erpTexture);
-            cmd.SetViewport(new Rect(0, 0, ErpWidth, ErpHeight));
-            cmd.ClearRenderTarget(false, true, BackgroundColor);
-            cmd.SetViewProjectionMatrices(m_omniWorldToCamera, Matrix4x4.identity);
-
-            for (int rendererIndex = 0; rendererIndex < renderers.Count; ++rendererIndex)
-            {
-                var renderer = renderers[rendererIndex];
-                if (!renderer || renderer.RenderMode != GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
-                    continue;
-                // A stereo eye must obtain an order buffer for its own viewpoint. The two eye positions are
-                // close, but reusing the other eye's ordering produces visible transparency errors nearby.
-                if (!renderer.PrepareRenderer(forceRendererRefresh || ForceSortPerErpRender))
-                    continue;
-
-                var matrixMv = m_omniWorldToCamera * renderer.transform.localToWorldMatrix;
-                GsplatSorter.Instance.DispatchSort(cmd, renderer, matrixMv,
-                    GsplatRenderer.GsplatRenderMode.HybridOmniPerspective);
-                renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight, Rasterizer);
-            }
+            bool forcePerEyeSort = forceRendererRefresh || ForceSortPerErpRender || singleCameraStereo;
+            RecordEyeErp(cmd, m_erpTexture, m_omniWorldToCamera, renderers, forcePerEyeSort);
+            if (singleCameraStereo)
+                RecordEyeErp(cmd, m_rightErpTexture, m_rightOmniWorldToCamera, renderers, true);
 
             cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
-            m_lastRenderPosition = transform.position;
+            m_lastRenderPosition = leftPosition;
+            m_lastRightRenderPosition = rightPosition;
+            m_lastRenderWasSingleCameraStereo = singleCameraStereo;
             m_lastRendererSignature = CalculateRendererSignature(renderers);
             m_lastRasterizer = Rasterizer;
             m_hasRendered = true;
             m_srpFramesWaitingForFeature = 0;
             m_warnedUrpFeatureMissing = false;
             return true;
+        }
+
+        void RecordEyeErp(CommandBuffer cmd, RenderTexture target, Matrix4x4 omniWorldToCamera,
+            IList<GsplatRenderer> renderers, bool forceRendererRefresh)
+        {
+            if (!target)
+                return;
+
+            cmd.SetRenderTarget(target);
+            cmd.SetViewport(new Rect(0, 0, ErpWidth, ErpHeight));
+            cmd.ClearRenderTarget(false, true, BackgroundColor);
+            cmd.SetViewProjectionMatrices(omniWorldToCamera, Matrix4x4.identity);
+
+            for (int rendererIndex = 0; rendererIndex < renderers.Count; ++rendererIndex)
+            {
+                var renderer = renderers[rendererIndex];
+                if (!renderer || renderer.RenderMode != GsplatRenderer.GsplatRenderMode.HybridOmniPerspective)
+                    continue;
+                if (!renderer.PrepareRenderer(forceRendererRefresh))
+                    continue;
+
+                var matrixMv = omniWorldToCamera * renderer.transform.localToWorldMatrix;
+                GsplatSorter.Instance.DispatchSort(cmd, renderer, matrixMv,
+                    GsplatRenderer.GsplatRenderMode.HybridOmniPerspective);
+                renderer.RenderOmni(cmd, OmniNearDistance, ErpWidth, ErpHeight, Rasterizer);
+            }
         }
 
         IList<GsplatRenderer> GetRenderers()
@@ -506,6 +586,45 @@ namespace Gsplat
                    Matrix4x4.Translate(-position);
         }
 
+        Matrix4x4 BuildErpViewMatrix(Vector3 position)
+        {
+            return UseTrainingPoseReference
+                ? ReferenceCameraMatrix(position, m_trainingReferenceRotation)
+                : WorldAlignedCameraMatrix(position);
+        }
+
+        bool IsSingleCameraStereoActive()
+        {
+            m_camera ??= GetComponent<Camera>();
+            return Application.isPlaying && XRSettings.isDeviceActive && m_camera && m_camera.stereoEnabled &&
+                   m_camera.stereoTargetEye == StereoTargetEyeMask.Both;
+        }
+
+        void GetErpEyePositions(out Vector3 leftPosition, out Vector3 rightPosition,
+            out bool singleCameraStereo)
+        {
+            m_camera ??= GetComponent<Camera>();
+            singleCameraStereo = IsSingleCameraStereoActive();
+            if (!singleCameraStereo)
+            {
+                leftPosition = transform.position;
+                rightPosition = leftPosition;
+                return;
+            }
+
+            leftPosition = GetStereoEyePosition(m_camera, Camera.StereoscopicEye.Left);
+            rightPosition = GetStereoEyePosition(m_camera, Camera.StereoscopicEye.Right);
+        }
+
+        static Vector3 GetStereoEyePosition(Camera camera, Camera.StereoscopicEye eye)
+        {
+            Matrix4x4 cameraToWorld = camera.GetStereoViewMatrix(eye).inverse;
+            Vector4 position = cameraToWorld.GetColumn(3);
+            if (Mathf.Abs(position.w) > 0.000001f)
+                return new Vector3(position.x, position.y, position.z) / position.w;
+            return new Vector3(position.x, position.y, position.z);
+        }
+
         // Unity's camera-local Y is up whereas the OpenMVG/CUDA camera convention used by the training rasterizer
         // has Y down. The shaders convert that local Y component explicitly when they map an ERP latitude.
         static Matrix4x4 ReferenceCameraMatrix(Vector3 position, Quaternion rotation)
@@ -541,22 +660,49 @@ namespace Gsplat
             if (source)
                 m_compositeMaterial.SetTexture(k_blitTexture, source);
             m_compositeMaterial.SetTexture(k_omniTex, m_erpTexture);
+            bool singleCameraStereo = IsSingleCameraStereoActive() && m_rightErpTexture;
+            m_compositeMaterial.SetTexture(k_omniTexRight,
+                singleCameraStereo ? m_rightErpTexture : m_erpTexture);
             m_compositeMaterial.SetVector(k_omniTexTexelSize,
                 new Vector4(1.0f / m_erpTexture.width, 1.0f / m_erpTexture.height,
                     m_erpTexture.width, m_erpTexture.height));
             int padding = UseVerticalBlackPadding ? VerticalBlackPaddingPixels : 0;
             m_compositeMaterial.SetVector(k_omniDisplayData,
                 new Vector4(DisplayErpHeight, padding, ErpHeight, UseVerticalBlackPadding ? 1.0f : 0.0f));
-            var cameraTransform = targetCamera.transform;
-            float tanHalfVerticalFov = Mathf.Tan(targetCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
-            m_compositeMaterial.SetVector(k_cameraForward, cameraTransform.forward);
-            m_compositeMaterial.SetVector(k_cameraRight, cameraTransform.right);
-            m_compositeMaterial.SetVector(k_cameraUp, cameraTransform.up);
-            m_compositeMaterial.SetVector(k_cameraProjectionData,
-                new Vector4(tanHalfVerticalFov, targetCamera.aspect, 0.0f, 0.0f));
-            m_compositeMaterial.SetMatrix(k_omniWorldToCamera, m_omniWorldToCamera);
+            if (singleCameraStereo)
+            {
+                SetCompositeEyeData(0, targetCamera.GetStereoViewMatrix(Camera.StereoscopicEye.Left).inverse,
+                    targetCamera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left), m_omniWorldToCamera);
+                SetCompositeEyeData(1, targetCamera.GetStereoViewMatrix(Camera.StereoscopicEye.Right).inverse,
+                    targetCamera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right), m_rightOmniWorldToCamera);
+            }
+            else
+            {
+                SetCompositeEyeData(0, targetCamera.cameraToWorldMatrix, targetCamera.projectionMatrix,
+                    m_omniWorldToCamera);
+                m_compositeCameraToWorld[1] = m_compositeCameraToWorld[0];
+                m_compositeProjectionData[1] = m_compositeProjectionData[0];
+                m_compositeOmniWorldToCamera[1] = m_compositeOmniWorldToCamera[0];
+            }
+
+            m_compositeMaterial.SetInt(k_stereoEnabled, singleCameraStereo ? 1 : 0);
+            m_compositeMaterial.SetMatrixArray(k_cameraToWorld, m_compositeCameraToWorld);
+            m_compositeMaterial.SetVectorArray(k_cameraProjectionData, m_compositeProjectionData);
+            m_compositeMaterial.SetMatrixArray(k_omniWorldToCamera, m_compositeOmniWorldToCamera);
             material = m_compositeMaterial;
             return true;
+        }
+
+        void SetCompositeEyeData(int index, Matrix4x4 cameraToWorld, Matrix4x4 projection,
+            Matrix4x4 omniWorldToCamera)
+        {
+            m_compositeCameraToWorld[index] = cameraToWorld;
+            // For Unity's perspective matrix, clip.w = -view.z. With view.z = -1,
+            // x = (ndc.x + projection.m02) / projection.m00 (and likewise for y).
+            // This retains the lens shift in the asymmetric Quest per-eye frustum.
+            m_compositeProjectionData[index] =
+                new Vector4(projection.m00, projection.m11, projection.m02, projection.m12);
+            m_compositeOmniWorldToCamera[index] = omniWorldToCamera;
         }
 
         void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)
@@ -586,7 +732,8 @@ namespace Gsplat
                         cmd.SetRenderTarget(camera.targetTexture);
                     else
                         cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
-                    cmd.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3, 1);
+                    cmd.DrawProcedural(Matrix4x4.identity, material, 2, MeshTopology.Triangles, 3,
+                        IsSingleCameraStereoActive() ? 2 : 1);
                 }
 
                 context.ExecuteCommandBuffer(cmd);

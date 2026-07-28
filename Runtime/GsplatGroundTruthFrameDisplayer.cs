@@ -133,7 +133,9 @@ namespace Gsplat
         /// </summary>
         public bool ApplyTrainingFrame(string jsonFilename, Vector3 cameraPosition, Quaternion trainingPoseRotation)
         {
-            EnsureRenderer();
+            if (!EnsureRenderer())
+                return false;
+
             EnsureTargetCamera();
             if (!HasIndependentCameraTransform())
             {
@@ -191,6 +193,16 @@ namespace Gsplat
                 DestroyUnityObject(m_loadedTexture);
                 m_loadedTexture = texture;
                 m_currentFilename = imagePath;
+
+                // A package/domain refresh can invalidate HideAndDontSave runtime materials while the component
+                // itself remains selected in the Inspector. Recreate the material before assigning the new frame.
+                if (!m_material && !EnsureMaterial())
+                {
+                    DestroyUnityObject(m_loadedTexture);
+                    m_loadedTexture = null;
+                    SetRendererEnabled(false);
+                    return false;
+                }
                 m_material.SetTexture(k_MainTex, m_loadedTexture);
             }
 
@@ -222,14 +234,23 @@ namespace Gsplat
                 TargetCamera = Camera.main;
         }
 
-        void EnsureRenderer()
+        bool EnsureRenderer()
         {
             m_meshFilter ??= GetComponent<MeshFilter>();
             m_meshRenderer ??= GetComponent<MeshRenderer>();
             if (!m_meshFilter || !m_meshRenderer)
-                return;
+            {
+                m_status = "Ground-truth displayer requires both MeshFilter and MeshRenderer components.";
+                return false;
+            }
 
-            EnsureMaterial();
+            if (!EnsureMaterial())
+            {
+                m_meshRenderer.sharedMaterial = null;
+                m_meshRenderer.enabled = false;
+                return false;
+            }
+
             if (GeometryChanged())
                 RebuildGeometry();
 
@@ -239,12 +260,13 @@ namespace Gsplat
             m_meshRenderer.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             m_meshRenderer.allowOcclusionWhenDynamic = false;
             SetRendererEnabled(ShowFrame && m_loadedTexture);
+            return m_generatedMesh && m_material;
         }
 
-        void EnsureMaterial()
+        bool EnsureMaterial()
         {
             if (m_material)
-                return;
+                return true;
 
             var template = Resources.Load<Material>("GsplatGroundTruthErpBackdrop");
             if (template)
@@ -254,14 +276,14 @@ namespace Gsplat
                     name = "Gsplat Ground-Truth ERP Backdrop (Runtime)",
                     hideFlags = HideFlags.HideAndDontSave,
                 };
-                return;
+                return true;
             }
 
             var shader = Shader.Find("Hidden/Gsplat/Ground Truth ERP Backdrop");
             if (!shader)
             {
                 m_status = "Ground-truth ERP material/shader could not be found. Reimport the GSplat package.";
-                return;
+                return false;
             }
 
             // Fallback for projects opened before the Resources material has been imported.
@@ -270,6 +292,7 @@ namespace Gsplat
                 name = "Gsplat Ground-Truth ERP Backdrop (Runtime)",
                 hideFlags = HideFlags.HideAndDontSave,
             };
+            return m_material;
         }
 
         bool GeometryChanged()
@@ -337,6 +360,9 @@ namespace Gsplat
         void RestoreSerializedFrame()
         {
             if (m_loadedTexture || string.IsNullOrWhiteSpace(m_currentFilename))
+                return;
+
+            if (!EnsureRenderer())
                 return;
 
             string imagePath;

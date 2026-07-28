@@ -29,8 +29,10 @@ Shader "Hidden/Gsplat/Ground Truth ERP Backdrop"
             ZTest [_DepthTest]
 
             CGPROGRAM
+            #pragma target 4.5
             #pragma vertex vert
             #pragma fragment frag
+            #pragma multi_compile_instancing
             #include "UnityCG.cginc"
 
             #ifndef UNITY_PI

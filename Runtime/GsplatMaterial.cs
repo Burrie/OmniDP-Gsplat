@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Yize Wu
+// Copyright (c) 2026 Yize Wu
 // SPDX-License-Identifier: MIT
 
 using UnityEngine;
@@ -51,6 +51,9 @@ namespace Gsplat
                 for (var j = 0; j < GsplatSettings.Instance.MaxRenderOrder; ++j)
                 {
                     var material = new Material(DefaultMaterial);
+                    // Perspective GSplat uses Unity instancing for both splat batches and XR eye routing.
+                    // OmniERP itself remains a mono offscreen pass, but sharing this flag is harmless.
+                    material.enableInstancing = true;
                     material.DisableKeyword($"SH_BANDS_0");
                     material.DisableKeyword($"SH_BANDS_1");
                     material.DisableKeyword($"SH_BANDS_2");
